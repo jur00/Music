@@ -23,7 +23,7 @@ class Music:
         raw_data_dir = '.\\files\\'
         lake_dir = '..\\..\\Lake\\'
         my_tracks_dir = lake_dir + 'music\\tracks_my\\'
-        rekordbox_filename = 'rekordbox_file.txt'
+        rekordbox_filename = 'music_rekordbox.txt'
 
         rekordbox = RekordboxDataset(raw_data_dir=raw_data_dir,
                                      rekordbox_filename=rekordbox_filename)

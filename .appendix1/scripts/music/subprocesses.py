@@ -351,9 +351,7 @@ class DatasetMy:
         track_path = self.tracks_dir + filename
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', category=UserWarning)
-            y, sr = librosa.load(track_path, sr=None)
-            if sr < 22050:
-                y, sr = librosa.load(track_path, sr=41000)
+            y, sr = librosa.load(track_path)
 
         bpm = self.rekordbox_data.loc[i, 'BPM']
 

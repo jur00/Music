@@ -9,7 +9,8 @@ import pandas as pd
 import mysql.connector as con
 from sqlalchemy import create_engine
 
-from music.other import make_spotify
+from music.other import make_spotify, get_credentials, overrule_spotify_errors
+from music.database import MySQLdb
 
 
 def change_list_to_string(row):
@@ -24,34 +25,12 @@ def get_end_artist(row):
 
 
 def get_artist_genres(row, nrows, sp):
-    genres = []
-    conn_error = True
-    sleep_counter = 0
-    while conn_error & (sleep_counter < 300):
-        try:
-            genres = sp.artist(row['id'])['genres']
-            conn_error = False
-            print(f'{row.name} / {nrows}', end='\r')
-        except requests.exceptions.ReadTimeout:
-            sleep_counter += 1
-            print('got an error, trying again...', end='\r')
-            time.sleep(1)
+    genres = overrule_spotify_errors(sp.artist(row['id'])['genres'], empty=[])
 
     return genres
 
 def get_related_artists(row, nrows, sp):
-    related_artists = []
-    conn_error = True
-    sleep_counter = 0
-    while conn_error & (sleep_counter < 300):
-        try:
-            related_artists = sp.artist_related_artists(row['id'])['artists']
-            conn_error = False
-            print(f'{row.name} / {nrows}', end='\r')
-        except requests.exceptions.ReadTimeout:
-            sleep_counter += 1
-            print('got an error, trying again...', end='\r')
-            time.sleep(1)
+    related_artists = overrule_spotify_errors(sp.artist_related_artists(row['id'])['artists'], empty=[])
 
     return [ra['id'] for ra in related_artists]
 
@@ -95,8 +74,6 @@ def create_music_database_my():
 
 
 def create_artists_table():
-    sp = make_spotify()
-
     df = pd.DataFrame(load('.\\files\\music_my.sav'))
     print('data loading done')
     df = df.loc[df['sp_dif_type'] == 'same', ['Artist', 'Composer', 'sp_artist', 'sp_id', 'sp_dif_type']]
@@ -114,17 +91,7 @@ def create_artists_table():
         artist = df['sp_artist'].iloc[i]
         if (artist not in sp_artists_done) & (artist.lower() in my_artists_unique):
             track_id = df['sp_id'].iloc[i]
-            track = {}
-            conn_error = True
-            sleep_counter = 0
-            while conn_error & (sleep_counter < 300):
-                try:
-                    track = sp.track(track_id)
-                    conn_error = False
-                except requests.exceptions.ReadTimeout:
-                    sleep_counter += 1
-                    print('got an error, trying again...', end='\r')
-                    time.sleep(1)
+            track = overrule_spotify_errors(sp.track(track_id), empty={})
 
             artist_ids['artist'].extend([artist['name'] for artist in track['artists']])
             artist_ids['id'].extend([artist['id'] for artist in track['artists']])
@@ -162,6 +129,86 @@ def create_artists_table():
     mydb.close()
 
 
+def create_training_table():
+    # two separate runs because of spotipy rate limits
+    db = MySQLdb(get_credentials('db'))
+
+    df_artists = db.load_table('artists_my_spotify')
+    training_data = {'root_artist': [],
+                     'root_artist_id': [],
+                     'album': [],
+                     'album_id': [],
+                     'artists': [],
+                     'trackname': [],
+                     'album_track_id': []}
+    for index, row in df_artists.iterrows():
+        artist_albums = overrule_spotify_errors(sp.artist_albums(row['id'])['items'], empty={})
+        for artist_album in artist_albums:
+            album_id = artist_album['id']
+            album_tracks = overrule_spotify_errors(sp.album_tracks(album_id)['items'], empty={})
+            for album_track in album_tracks:
+                track_artists = album_track['artists']
+
+                training_data['root_artist'].append(row['artist'])
+                training_data['root_artist_id'].append(row['id'])
+                training_data['album'].append(artist_album['name'])
+                training_data['album_id'].append(artist_album['id'])
+                training_data['artists'].append(
+                    ', '.join([track_artist['name'] for track_artist in track_artists]))
+                training_data['trackname'].append(album_track['name'])
+                training_data['album_track_id'].append(album_track['id'])
+
+                print(f'{index} / {df_artists.shape[0]} {row["artist"]} {len(artist_albums)}'
+                      f' albums where found. Total tracks: {len(training_data["album"])}',
+                      end='\r')
+
+    df_training_data = pd.DataFrame(training_data).drop_duplicates(subset=['artists', 'trackname'])
+    # df_training_data = pd.concat([load(f'tmp_training_data_{idxs}.sav') for idxs in ['0_386', '386_574', '574_']])
+    df_training_data = df_training_data.reset_index(drop=True)
+    df_l = df_training_data.shape[0]
+    chunks = list(range(0, df_l, 50)) + [df_l]
+    training_data_ext = {'track_id': [],
+                         'popularity': [],
+                         'duration': [],
+                         'tempo': [],
+                         'danceability': [],
+                         'energy': [],
+                         'valence': [],
+                         'instrumentalness': [],
+                         'mode': [],
+                         'key': []}
+    for i in range(1, len(chunks)):
+        print(f'{i} / {len(chunks) - 1}', end='\r')
+        start, stop = chunks[i - 1:i + 1]
+        tracks = overrule_spotify_errors(
+            sp.tracks(df_training_data.loc[start:stop - 1, 'album_track_id']),
+            empty={})
+        track_ids = [track['id'] for track in tracks['tracks']]
+        audio_features = overrule_spotify_errors(sp.audio_features(track_ids))
+
+        for track, audio_feature in zip(tracks['tracks'], audio_features):
+            training_data_ext['track_id'].append(track['id'])
+            training_data_ext['popularity'].append(track['popularity'])
+            training_data_ext['duration'].append(track['duration_ms'])
+            if audio_feature:
+                for feature in ['tempo', 'danceability', 'energy', 'valence', 'instrumentalness', 'mode', 'key']:
+                    training_data_ext[feature].append(audio_feature[feature])
+            else:
+                for feature in ['tempo', 'danceability', 'energy', 'valence', 'instrumentalness', 'mode', 'key']:
+                    training_data_ext[feature].append(0)
+
+    df_training_data_ext = pd.DataFrame(training_data_ext)
+
+    df = pd.concat([df_training_data, df_training_data_ext], axis=1)
+    df = df.reset_index().rename(columns={'index': 'id'})
+
+    engine = create_engine(f'mysql+mysqlconnector://{username}:{password}@{host}/{db_name}').connect()
+    df.to_sql(name='tracks_training', if_exists='replace',
+              con=engine, index=False, chunksize=24, method='multi')
+    print('tracks_training: Done')
+    engine.close()
+
+
 CREDENTIAL_FILE = 'credentials.json'
 
 with open(CREDENTIAL_FILE, 'rb') as f:
@@ -171,4 +218,6 @@ host = db_config['db']['host']
 username = db_config['db']['username']
 password = db_config['db']['password']
 db_name = 'music'
+
+sp = make_spotify()
 
