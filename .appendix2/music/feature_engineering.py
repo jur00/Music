@@ -622,7 +622,7 @@ class FeatureEngineering:
         yt_words = ['official', 'audio', 'music', 'video', 'full',
                     'enhanced', 'track', 'feat', 'ft', 'featuring',
                     'hq', 'premiere', 'records', 'hd', 'and', 'the']
-        years = [str(i) for i in range(1900, datetime.now().year)]
+        years = [str(i) for i in range(1955, datetime.now().year)]
         all_yt_words = yt_words + years
         all_sp_words = ['and', 'feat']
 
