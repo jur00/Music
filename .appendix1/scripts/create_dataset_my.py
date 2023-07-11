@@ -1083,10 +1083,6 @@ def check_original_my_music_librosa_features(data):
     assert all(librosa_same_all), "Not all librosa values match, check new data file."
     logging.info("All librosa features match with the original my_music file, redundant files can be removed safely.")
 
-
-
-
-
 feature_categories_filename = '../../feature_categories_my.sav'
 data_filename = 'my_music_raw'
 rekordbox_filename = '../../rekordbox_file.txt'
