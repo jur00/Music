@@ -32,40 +32,19 @@ from update_dataset.helpers import (jaccard_similarity, neutralize, overrule_con
                                     set_dir, levenshtein_distance, find)
 
 
-class Credentials:
+def load_credentials(path):
+    with open(path, 'rb') as f:
+        credentials = json.load(f)
 
-    def __init__(self, directory, filename, api):
-        self.file_location = f'{directory}\\{filename}' if directory != '' else filename
-        self.api = api
-
-        self.credentials = None
-
-    def get(self):
-        with open(self.file_location, 'rb') as f:
-            self.credentials = json.load(f)[self.api]
-
-
-class MyMusic:
-
-    def __init__(self, directory, filename):
-        self.file_location = f'{directory}\\{filename}' if directory != '' else filename
-
-        self.data = None
-
-    def get(self):
-        self._load()
-
-    def _load(self):
-        self.data = load(self.file_location)
+    return credentials
 
 
 class RekordboxMusic:
 
     def __init__(self,
-                 directory,
-                 filename):
+                 path):
 
-        self.file_location = f'{directory}\\{filename}' if directory != '' else filename
+        self.file_location = path
 
         self.sp = None
         self.driver = None
@@ -85,6 +64,8 @@ class RekordboxMusic:
         self._categorize_origin_type()
         self._drop_rownumber_column()
         self._to_records()
+
+        return self.data
 
     def _load_txt(self):
         self.df = pd.read_csv(self.file_location,
@@ -1093,17 +1074,22 @@ class TestFeatures:
 
 class Popularity:
 
-    def __init__(self, data):
+    def __init__(self, data, my_music_path):
         self.data = data
+        self.my_music_path = my_music_path
 
         self.complete = None
 
     def get(self):
         popularities_in_data = ['popularity' in list(self.data[i].keys()) for i in range(len(self.data))]
         n_popularities = np.sum(popularities_in_data)
-        self.complete = n_popularities < len(self.data)
+        self.complete = n_popularities == len(self.data)
         if self.complete:
+            print('Dataset up to date')
+        else:
             self._calculate_popularity_score()
+            dump(self.my_music_path)
+            print('Popularity added, dataset up to date')
 
     def _calculate_popularity_score(self):
         rl = range(len(self.data))
@@ -1138,3 +1124,26 @@ class Popularity:
             self.data[i]['sp_popularity'] = sp_pop_dist[i]
             self.data[i]['yt_popularity'] = yt_pop_dist[i]
             self.data[i]['popularity'] = (self.data[i]['sp_popularity'] + self.data[i]['yt_popularity']) / 2
+
+
+class Versioning:
+
+    def __init__(self, data_mm, removed_indexes):
+
+        self.data_mm = data_mm
+        self.removed_indexes = removed_indexes
+
+        self.version = None
+
+    def get_version(self):
+        if len(self.data_mm) == 0:
+            self.version = 1
+        else:
+            version_cols = [int(version_col.split('_')[-1])
+                            for version_col in self.data_mm[0].keys()
+                            if version_col.startswith('version_')]
+            self.version = len(version_cols) + 1
+
+    def set_version_column(self, i):
+        is_in_version = 0 if i in self.removed_indexes else 1
+        return {f'version_{self.version}': is_in_version}
