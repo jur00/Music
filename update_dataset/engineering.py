@@ -23,13 +23,12 @@ import subprocess
 import shutil
 import warnings
 import os
-from contextlib import contextmanager
 import stat
 import json
 
 from update_dataset.helpers import (jaccard_similarity, neutralize, overrule_connection_errors,
                                     create_name_string, check_original, add_or_remove_original,
-                                    set_dir, levenshtein_distance, find)
+                                    set_dir, levenshtein_distance, find, on_rm_error)
 
 
 def load_credentials(path):
@@ -129,6 +128,28 @@ class RekordboxMusic:
         self.data = self.df.to_dict('records')
 
 
+class ExplorerInterruption:
+
+    def __init__(self, data_rm, tracks_dir):
+        self.data_rm = data_rm
+        self.tracks_dir = tracks_dir
+
+    def change_shortened_filenames(self):
+        data_rm_filenames_original = [d['File Name'] for d in self.data_rm]
+        data_rm_filenames_short = [re.sub(r'[^0-9a-zA-Z]+', '', filename) for filename in data_rm_filenames_original]
+        with set_dir(self.tracks_dir):
+            for fn_original, fn_short in zip(data_rm_filenames_original, data_rm_filenames_short):
+                if fn_short in os.listdir():
+                    os.rename(fn_short, fn_original)
+
+    def empty_output_map(self):
+        with set_dir(f'{self.tracks_dir}\\output'):
+            temp_maps = os.listdir()
+            if len(temp_maps) > 0:
+                for mapname in temp_maps:
+                    shutil.rmtree(mapname, onerror=on_rm_error)
+
+
 class Disjoint:
 
     def __init__(self, data1,
@@ -161,6 +182,8 @@ class Disjoint:
             filenames_data = set([d[self.feature] for d in data])
         elif datatype == 'list':
             filenames_data = set(data)
+        else:
+            raise ValueError('datatype must be one of [list, dict]')
 
         return filenames_data
 
@@ -643,7 +666,7 @@ class WaveFeatures:
                 y_v, sr_v = librosa.load('vocals.wav', sr=44100)
 
         with set_dir(f'{self.tracks_dir}\\output\\'):
-            shutil.rmtree(mapname, onerror=self._on_rm_error)
+            shutil.rmtree(mapname, onerror=on_rm_error)
 
         overall_max = np.max(np.abs(y_o))
         y_v = np.abs(y_v) / overall_max
@@ -674,13 +697,6 @@ class WaveFeatures:
         self.wave_features = self._get_librosa_features(y, sr)
         self.wave_features.update(self._get_chord_features(y, sr, bpm))
         self.wave_features.update(self._get_vocalness_feature(filename, y))
-
-    @staticmethod
-    def _on_rm_error(func, path, exc_info):
-        # path contains the path of the file that couldn't be removed
-        # let's just assume that it's read-only and unlink it.
-        os.chmod(path, stat.S_IWRITE)
-        os.unlink(path)
 
 
 class FeaturesImprovement:
@@ -1088,7 +1104,7 @@ class Popularity:
             print('Dataset up to date')
         else:
             self._calculate_popularity_score()
-            dump(self.my_music_path)
+            dump(self.data, self.my_music_path)
             print('Popularity added, dataset up to date')
 
     def _calculate_popularity_score(self):
@@ -1128,10 +1144,12 @@ class Popularity:
 
 class Versioning:
 
-    def __init__(self, data_mm, removed_indexes):
+    def __init__(self, data_mm, my_music_path, added, removed):
 
         self.data_mm = data_mm
-        self.removed_indexes = removed_indexes
+        self.my_music_path = my_music_path
+        self.added = added
+        self.removed = removed
 
         self.version = None
 
@@ -1144,6 +1162,22 @@ class Versioning:
                             if version_col.startswith('version_')]
             self.version = len(version_cols) + 1
 
-    def set_version_column(self, i):
-        is_in_version = 0 if i in self.removed_indexes else 1
-        return {f'version_{self.version}': is_in_version}
+    def set_version_column(self):
+        if self.version > 1:
+            d = {f'version_{i}': 0 for i in range(1, self.version)}
+            d.update({f'version_{self.version}': 1})
+
+            return d
+        else:
+            return {f'version_{self.version}': 1}
+
+    def expand_versions_of_existing_tracks(self):
+        for i in range(len(self.data_mm)):
+            if self.data_mm[i]['File Name'] not in self.added:
+                in_previous_version = self.data_mm[i][f'version_{self.version - 1}']
+                self.data_mm[i].update({f'version_{self.version}': in_previous_version})
+            if self.data_mm[i]['File Name'] in self.removed:
+                self.data_mm[i].update({f'version_{self.version}': 0})
+
+        dump(self.data_mm, self.my_music_path)
+

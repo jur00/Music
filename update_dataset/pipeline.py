@@ -1,9 +1,11 @@
 import os
 from pathlib import Path
 
+import pandas as pd
 from joblib import load, dump
 
-from update_dataset.engineering import (load_credentials, RekordboxMusic, Disjoint,
+from update_dataset.engineering import (load_credentials, RekordboxMusic, ExplorerInterruption,
+                                        Disjoint,
                                         SpotifyFeatures, YoutubeFeatures, WaveFeatures,
                                         FeaturesImprovement, Popularity, Versioning)
 from update_dataset.helpers import Progress
@@ -13,7 +15,7 @@ tracks_dir = 'D:\\Data Science\\Lake\\music\\tracks_my\\'
 file_dir = 'files'
 my_music_fn = 'music_my.sav'
 my_music_path = Path(file_dir, my_music_fn)
-rekordbox_music_fn = 'music_rekordbox.txt'
+rekordbox_music_fn = 'music_rekordbox_chunk_1.txt'
 rekordbox_music_path = Path(file_dir, rekordbox_music_fn)
 credential_dir = ''
 credential_fn = 'credentials.json'
@@ -27,6 +29,11 @@ data_mm = load(my_music_path)
 rm = RekordboxMusic(rekordbox_music_path)
 data_rm = rm.get()
 
+# check if wave feature extraction was interrupted
+ei = ExplorerInterruption(data_rm, tracks_dir)
+ei.change_shortened_filenames()
+ei.empty_output_map()
+
 # check which tracks are not in track_dir
 tracks_in_dir = os.listdir(tracks_dir)
 dj_dir = Disjoint(rm.data, tracks_in_dir, datatype2='list')
@@ -36,24 +43,27 @@ if n_tracks_to_copy > 0:
     raise FileNotFoundError(f'{n_tracks_to_copy} tracks need to be copied to tracks_dir: {copy_to_tracks_dir}')
 
 dj_data = Disjoint(data_rm, data_mm)
-added_indexes = dj_data.get_indexes(type='not_in_data2')
-removed_indexes = dj_data.get_indexes(type='not_in_data1')
+added_indexes_rm = dj_data.get_indexes(type='not_in_data2')
+added = dj_data.not_in_data2()
+removed = dj_data.not_in_data1()
 
-
-version = Versioning(data_mm, removed_indexes)
-version.get_version()
-
-if len(added_indexes) == 0:
+if len(added_indexes_rm) == 0:
     popularity = Popularity(data_mm, my_music_path)
     popularity.get()
 else:
+    removed_indexes_mm = dj_data.get_indexes(type='not_in_data1')
+
+    version = Versioning(data_mm, my_music_path, added, removed)
+    version.get_version()
+    version.expand_versions_of_existing_tracks()
+
     credentials = load_credentials(credential_path)
     sf = SpotifyFeatures(rb_data=data_rm, credentials=credentials['sp'])
     yf = YoutubeFeatures(rb_data=data_rm, credentials=credentials['yt'])
     wf = WaveFeatures(tracks_dir=tracks_dir, rb_data=data_rm)
 
     progress = Progress()
-    for i in [1950, 1620, 45]:
+    for i in added_indexes_rm:
         my_music = load(my_music_path)
         all_features = {}
 
@@ -68,14 +78,23 @@ else:
         wf.get(i)
         all_features.update(wf.wave_features)
 
-        all_features.update(version.set_version_column(i))
-
         fi = FeaturesImprovement(all_features)
         fi.improve()
 
         all_features = fi.af.copy()
+
+        all_features.update(version.set_version_column())
+
         my_music.append(all_features)
         dump(my_music, my_music_path)
 
-        progress.show([1950, 1620, 45], i)
+        progress.show(added_indexes_rm, i)
 
+    my_music = load(my_music_path)
+    popularity = Popularity(my_music, my_music_path)
+    popularity.get()
+
+import pandas as pd
+my_music = load(my_music_path)
+tmp = pd.DataFrame(my_music)
+tmpv = tmp[[col for col in tmp.columns if col.startswith('version_')]]
