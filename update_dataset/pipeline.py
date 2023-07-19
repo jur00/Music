@@ -7,7 +7,8 @@ from joblib import load, dump
 from update_dataset.engineering import (load_credentials, RekordboxMusic, ExplorerInterruption,
                                         Disjoint,
                                         SpotifyFeatures, YoutubeFeatures, WaveFeatures,
-                                        FeaturesImprovement, Popularity, Versioning)
+                                        FeaturesImprovement, Popularity, Versioning,
+                                        ConnectionErrors)
 from update_dataset.helpers import Progress
 
 # set global variables
@@ -29,7 +30,7 @@ data_mm = load(my_music_path)
 rm = RekordboxMusic(rekordbox_music_path)
 data_rm = rm.get()
 
-# check if wave feature extraction was interrupted
+# check if vocalness feature extraction was interrupted
 ei = ExplorerInterruption(data_rm, tracks_dir)
 ei.change_shortened_filenames()
 ei.empty_output_map()
@@ -46,8 +47,9 @@ dj_data = Disjoint(data_rm, data_mm)
 added_indexes_rm = dj_data.get_indexes(type='not_in_data2')
 added = dj_data.not_in_data2()
 removed = dj_data.not_in_data1()
+n_changes = len(added) + len(removed)
 
-if len(added_indexes_rm) == 0:
+if n_changes == 0:
     popularity = Popularity(data_mm, my_music_path)
     popularity.get()
 else:
@@ -64,7 +66,7 @@ else:
 
     progress = Progress()
     for i in added_indexes_rm:
-        my_music = load(my_music_path)
+        data_mm = load(my_music_path)
         all_features = {}
 
         all_features.update(data_rm[i])
@@ -85,16 +87,15 @@ else:
 
         all_features.update(version.set_version_column())
 
-        my_music.append(all_features)
-        dump(my_music, my_music_path)
+        ce = ConnectionErrors(all_features, data_mm, data_rm, sf, yf)
+        data_mm = ce.handle()
+
+        data_mm.append(all_features)
+        dump(data_mm, my_music_path)
 
         progress.show(added_indexes_rm, i)
 
-    my_music = load(my_music_path)
-    popularity = Popularity(my_music, my_music_path)
+    data_mm = load(my_music_path)
+    popularity = Popularity(data_mm, my_music_path)
     popularity.get()
 
-import pandas as pd
-my_music = load(my_music_path)
-tmp = pd.DataFrame(my_music)
-tmpv = tmp[[col for col in tmp.columns if col.startswith('version_')]]

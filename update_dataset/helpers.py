@@ -4,6 +4,7 @@ import time
 import requests
 import socket
 import urllib3
+import httplib2
 from contextlib import contextmanager
 import os
 from datetime import datetime
@@ -52,13 +53,14 @@ def overrule_connection_errors(func, verbose=1, empty=None):
                 requests.exceptions.ConnectionError,
                 urllib3.exceptions.ReadTimeoutError,
                 socket.timeout,
-                spotipy.exceptions.SpotifyException) as error:
+                spotipy.exceptions.SpotifyException,
+                httplib2.error.ServerNotFoundError) as error:
             sleep_counter += 1
             if verbose > 0:
                 print('got an error, trying again...', end='\r')
             time.sleep(1)
 
-    return output
+    return output, conn_error
 
 def create_name_string(rb_data, i, name_parts):
     return neutralize(' '.join([v for k, v in rb_data[i].items() if k in name_parts]).strip())

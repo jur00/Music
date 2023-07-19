@@ -18,17 +18,13 @@ data = rm.get()
 df = pd.DataFrame(data)
 df = df.sort_values(by='rb_duration')
 
-# get exponential growing chunk indexes
-chunk_idxs = [int(ceil(2.5 * 2**i)) for i in range(10)]
-chunk_idxs[-1] = df.shape[0] - sum(chunk_idxs[:-1])
-chunk_idxs = np.cumsum(chunk_idxs)
+# get indexes of shortest songs
+shortest_idxs = list(df.index[:5])
+shortest_idxs = [str(i+1) for i in shortest_idxs]
+chunk_idxs = [shortest_idxs[:i] if i == 2 else shortest_idxs[1:i] for i in range(2, len(shortest_idxs))]
+chunks = [chunk + ['#'] for chunk in chunk_idxs]
 
-# set index being first at 1
-df_index = df.index
-df_index += 1
-
-# split music_rekordbox file in more sub files
-chunks = [list(df_index[:chunk_idx].astype(str)) + ['#'] for chunk_idx in chunk_idxs]
+# read and write txt files
 for i in range(len(chunks)):
     with open(rb_path, 'r', encoding='utf-16') as f:
         lines = []

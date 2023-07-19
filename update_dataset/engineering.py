@@ -1,4 +1,3 @@
-from itertools import chain
 import pandas as pd
 from joblib import load, dump
 import numpy as np
@@ -13,7 +12,6 @@ from unidecode import unidecode
 from datetime import datetime
 import re
 import time
-import requests
 import librosa
 from spafe.features.gfcc import gfcc
 from entropy_estimators import continuous
@@ -23,7 +21,6 @@ import subprocess
 import shutil
 import warnings
 import os
-import stat
 import json
 
 from update_dataset.helpers import (jaccard_similarity, neutralize, overrule_connection_errors,
@@ -217,6 +214,8 @@ class SpotifyFeatures(SpotifyConnect):
         self.spotify_features = {}
         self.track_main_features = None
         self.track_audio_features = None
+        self.conn_error_main = False
+        self.conn_error_audio = False
 
         self._is_original = None
         self._best = None
@@ -228,6 +227,8 @@ class SpotifyFeatures(SpotifyConnect):
         self.spotify_features.update(self.track_main_features)
         self.get_track_audio_features(self.track_main_features['sp_id'])
         self.spotify_features.update(self.track_audio_features)
+        self.spotify_features.update({'sp_main_conn_error': self.conn_error_main,
+                                      'sp_audio_conn_error': self.conn_error_audio})
 
     def get_track_main_features(self, i):
         self.i = i
@@ -248,7 +249,7 @@ class SpotifyFeatures(SpotifyConnect):
         features_list = ['id', 'danceability', 'energy', 'valence', 'instrumentalness',
                          'speechiness', 'acousticness', 'loudness', 'key', 'mode']
         if len(self.track_main_features['sp_id']) > 0:
-            audio_features = overrule_connection_errors(self.sp.audio_features(sp_id))
+            audio_features, self.conn_error_audio = overrule_connection_errors(self.sp.audio_features(sp_id))
             self.track_audio_features = {f'sp_{feature}': audio_features[0][f'{feature}'] for feature in features_list}
         else:
             self.track_audio_features = {f'sp_{feature}': 0 for feature in features_list}
@@ -256,8 +257,9 @@ class SpotifyFeatures(SpotifyConnect):
     def _search(self):
         query_name_parts = ['Artist', 'Mix Name']
         artist_track = create_name_string(self.rb_data, self.i, query_name_parts)
-        self.results = overrule_connection_errors(self.sp.search(q=artist_track, type="track", limit=50))['tracks'][
-            'items']
+        self.results, self.conn_error_main = overrule_connection_errors(
+            self.sp.search(q=artist_track, type="track", limit=50))
+        self.results = self.results['tracks']['items']
 
     def _identify_most_similar_spotify_name(self, compare_name, similarities):
         if self._is_original:
@@ -337,6 +339,8 @@ class YoutubeFeatures(YoutubeConnect):
 
         self.i = None
         self.youtube_features = None
+        self.conn_error_search = None
+        self.conn_error_video = None
 
     def _create_rb_name_set(self):
         full_name = create_name_string(self.rb_data, self.i, ['Artist', 'Mix Name', 'Composer', 'Album', 'Label'])
@@ -403,12 +407,12 @@ class YoutubeFeatures(YoutubeConnect):
         rb_name_set = self._create_rb_name_set()
         link = self._create_yt_search_link()
         self._input_link(link)
-        user_data = self._search()
+        user_data, self.conn_error_search = self._search()
 
         if len(user_data) > 0:
             if not user_data[0].get_attribute('href') is None:
                 yt_id = self._extract_youtube_id(user_data)
-                yt_result = self._pull_features(yt_id)
+                yt_result, self.conn_error_video = self._pull_features(yt_id)
                 yt_name, yt_category, yt_views, yt_duration_str, yt_publish_date = self._set_features(yt_result)
                 yt_duration = self._transform_yt_duration(yt_duration_str)
                 yt_name_set = self._create_yt_name_set(yt_name)
@@ -420,7 +424,9 @@ class YoutubeFeatures(YoutubeConnect):
             'yt_duration': yt_duration,
             'yt_category': yt_category,
             'yt_rb_name_dif': list(set(yt_name_set) - set(rb_name_set)),
-            'rb_yt_name_dif': list(set(rb_name_set) - set(yt_name_set))
+            'rb_yt_name_dif': list(set(rb_name_set) - set(yt_name_set)),
+            'yt_search_conn_error': self.conn_error_search,
+            'yt_video_conn_error': self.conn_error_video
         }
 
 
@@ -1181,3 +1187,40 @@ class Versioning:
 
         dump(self.data_mm, self.my_music_path)
 
+
+class ConnectionErrors:
+
+    def __init__(self, all_features, data_mm, data_rm, sf, yf):
+
+        self.all_features = all_features
+        self.data_mm = data_mm.copy()
+        self.data_rm = data_rm.copy()
+        self.sf = sf
+        self.yf = yf
+
+        self.conn_errors = {'sp': ['sp_main_conn_error', 'sp_audio_conn_error'],
+                            'yt': ['yt_search_conn_error', 'yt_video_conn_error']}
+
+    def retry(self, d, sp_yt):
+        i = find(self.data_rm, 'File Name', d['File Name'])
+        if sp_yt == 'sp':
+            self.sf.get(i)
+            return self.sf.spotify_features
+        if sp_yt == 'yt':
+            self.yf.get(i)
+            return self.yf.youtube_features
+
+    def handle(self):
+        any_errors = any([self.all_features[err] for err in self.conn_errors['sp'] + self.conn_errors['yt']])
+        if not any_errors:
+            for d in self.data_mm:
+                rm_filenames = [drm['File Name'] for drm in self.data_rm]
+                if d['File Name'] in rm_filenames:
+                    if any([d[sce] for sce in self.conn_errors['sp']]):
+                        sp_error_features = self.retry(d, 'sp')
+                        d.update(sp_error_features)
+                    if any([d[yce] for yce in self.conn_errors['yt']]):
+                        yt_error_features = self.retry(d, 'yt')
+                        d.update(yt_error_features)
+
+        return self.data_mm
