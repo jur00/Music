@@ -43,22 +43,26 @@ n_tracks_to_copy = len(copy_to_tracks_dir)
 if n_tracks_to_copy > 0:
     raise FileNotFoundError(f'{n_tracks_to_copy} tracks need to be copied to tracks_dir: {copy_to_tracks_dir}')
 
+# check which tracks are added/removed
 dj_data = Disjoint(data_rm, data_mm)
 added_indexes_rm = dj_data.get_indexes(type='not_in_data2')
 added = dj_data.not_in_data2()
 removed = dj_data.not_in_data1()
 n_changes = len(added) + len(removed)
 
+# only if # changes > 0, update dataset with new version and features
 if n_changes == 0:
     popularity = Popularity(data_mm, my_music_path)
     popularity.get()
 else:
     removed_indexes_mm = dj_data.get_indexes(type='not_in_data1')
 
+    # create new version number
     version = Versioning(data_mm, my_music_path, added, removed)
     version.get_version()
     version.expand_versions_of_existing_tracks()
 
+    # initialize feature getters
     credentials = load_credentials(credential_path)
     sf = SpotifyFeatures(rb_data=data_rm, credentials=credentials['sp'])
     yf = YoutubeFeatures(rb_data=data_rm, credentials=credentials['yt'])
@@ -98,4 +102,3 @@ else:
     data_mm = load(my_music_path)
     popularity = Popularity(data_mm, my_music_path)
     popularity.get()
-
