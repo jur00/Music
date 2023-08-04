@@ -50,7 +50,7 @@ added = dj_data.not_in_data2()
 removed = dj_data.not_in_data1()
 n_changes = len(added) + len(removed)
 
-# only if # changes > 0, update dataset with new version and features
+# only if n_changes > 0, update dataset with new version and features
 if n_changes == 0:
     popularity = Popularity(data_mm, my_music_path)
     popularity.get()
@@ -91,6 +91,7 @@ else:
 
         all_features.update(version.set_version_column())
 
+        # update tracks where connection errors occurred
         ce = ConnectionErrors(all_features, data_mm, data_rm, sf, yf)
         data_mm = ce.handle()
 

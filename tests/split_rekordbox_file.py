@@ -10,7 +10,7 @@ from update_dataset.engineering import RekordboxMusic
 # and gradually add tracks to the database
 
 # initialize
-file_dir = 'files'
+file_dir = 'files\\test_data\\update_dataset'
 rekordbox_music_fn = 'music_rekordbox.txt'
 rb_path = Path(file_dir, rekordbox_music_fn)
 rm = RekordboxMusic(rb_path)
