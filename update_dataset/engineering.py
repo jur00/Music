@@ -149,41 +149,38 @@ class ExplorerInterruption:
 
 class Disjoint:
 
-    def __init__(self, data1,
-                 data2, datatype1='dict', datatype2='dict',
-                 feature='File Name'):
-        self.data1 = data1
-        self.data2 = data2
-        self.datatype1 = datatype1
-        self.datatype2 = datatype2
-        self.feature = feature
+    def __init__(self, data_rm, data_mm, tracks_dir):
+        self.data_rm = data_mm
+        self.data_mm = data_mm
+        self.tracks_dir = tracks_dir
 
-    def not_in_data1(self):
-        return list(self._check_filenames(self.data2, self.datatype2) -
-                    self._check_filenames(self.data1, self.datatype1))
+        self.filenames_rm = set([d['File Name'] for d in data_rm])
+        self.filenames_mm = set([d['File Name'] for d in data_mm])
+        self.filenames_tracks_dir = set(os.listdir(tracks_dir))
 
-    def not_in_data2(self):
-        return list(self._check_filenames(self.data1, self.datatype1) -
-                    self._check_filenames(self.data2, self.datatype2))
+        self.filenames_added = None
+        self.filenames_removed = None
+        self.filenames_wave = None
+        self.n_changes = None
 
-    def get_indexes(self, type='not_in_data2'):
-        if type == 'not_in_data2':
-            names = self.not_in_data2()
-            return list([find(self.data1, 'File Name', fn) for fn in names])
-        else:
-            names = self.not_in_data1()
-            return list([find(self.data2, 'File Name', fn) for fn in names])
+    def check_missing_filenames_in_tracks_dir(self):
+        filenames_missing_in_tracks_dir = list(self.filenames_rm - self.filenames_tracks_dir)
+        n_missing_tracks = len(filenames_missing_in_tracks_dir)
+        if n_missing_tracks > 0:
+            raise FileNotFoundError(f'{n_missing_tracks} tracks need to be copied to tracks_dir: {filenames_missing_in_tracks_dir}')
 
-    def _check_filenames(self, data, datatype):
-        if datatype == 'dict':
-            filenames_data = set([d[self.feature] for d in data])
-        elif datatype == 'list':
-            filenames_data = set(data)
-        else:
-            raise ValueError('datatype must be one of [list, dict]')
+    def get_added_tracks(self):
+        self.filenames_added = list(self.filenames_rm - self.filenames_mm)
+        return self.filenames_added
 
-        return filenames_data
+    def get_removed_tracks(self):
+        self.filenames_removed = list(self.filenames_mm - self.filenames_rm)
+        return self.filenames_removed
 
+    def get_tracks_for_wave_analysis(self):
+        self.filenames_wave = self.filenames_added + [d['File Name'] for d in self.data_mm if 'sample_rate' not in d.keys()]
+        self.n_changes = len(self.filenames_wave)
+        return self.filenames_wave
 
 class SpotifyConnect:
 
@@ -228,7 +225,8 @@ class SpotifyFeatures(SpotifyConnect):
         self.get_track_audio_features(self.track_main_features['sp_id'])
         self.spotify_features.update(self.track_audio_features)
         self.spotify_features.update({'sp_main_conn_error': self.conn_error_main,
-                                      'sp_audio_conn_error': self.conn_error_audio})
+                                      'sp_audio_conn_error': self.conn_error_audio,
+                                      'datetime_analyzed_sp_yt': datetime.now()})
 
     def get_track_main_features(self, i):
         self.i = i
@@ -327,7 +325,7 @@ class YoutubeConnect:
         browser_option.add_argument('--disable-dev-shm-usage')
         browser_option.add_argument('--log-level=3')
         browser_option.add_experimental_option('excludeSwitches', ['enable-logging'])
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=browser_option)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager(version='114.0.5735.90').install()), options=browser_option)
 
         return youtube, driver
 
@@ -696,7 +694,7 @@ class WaveFeatures:
 
         vocalness_feature = {'vocalness': round(vocalness, 2),
                              'file_type': extension,
-                             'datetime_analyzed': datetime.now()}
+                             'datetime_analyzed_wave': datetime.now()}
 
         return vocalness_feature
 
@@ -797,7 +795,7 @@ class FeaturesImprovement:
 class Popularity:
 
     def __init__(self, data, my_music_path):
-        self.data = data
+        self.data = [d for d in data if 'sp_id' in d.keys()]
         self.my_music_path = my_music_path
 
         self.complete = None
@@ -811,7 +809,7 @@ class Popularity:
         else:
             self._calculate_popularity_score()
             dump(self.data, self.my_music_path)
-            print('Popularity added, dataset up to date')
+            print('Popularity added')
 
     def _calculate_popularity_score(self):
         rl = range(len(self.data))
@@ -872,7 +870,6 @@ class Versioning:
         if self.version > 1:
             d = {f'version_{i}': 0 for i in range(1, self.version)}
             d.update({f'version_{self.version}': 1})
-
             return d
         else:
             return {f'version_{self.version}': 1}

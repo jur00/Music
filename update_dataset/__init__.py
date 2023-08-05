@@ -3,7 +3,7 @@ from pathlib import Path
 
 from joblib import load, dump
 
-from update_dataset.helpers import Progress
+from update_dataset.helpers import find, Progress
 from update_dataset.engineering import (load_credentials, RekordboxMusic, ExplorerInterruption,
                                         Disjoint, SpotifyFeatures, YoutubeFeatures, WaveFeatures,
                                         FeaturesImprovement, Popularity, Versioning, ConnectionErrors)
@@ -29,9 +29,10 @@ class UpdateDataset:
 
         self.data_mm = None
         self.data_rm = None
-        self.added = None
-        self.removed = None
-        self.added_indexes_rm = None
+        self.disjoint = None
+        self.filenames_added = None
+        self.filenames_removed = None
+        self.filenames_wave = None
         self.n_changes = None
         self.version = None
         self.sf = None
@@ -49,85 +50,98 @@ class UpdateDataset:
         ei.empty_output_map()
 
     def _check_missing_tracks_in_dir(self):
-        tracks_in_dir = os.listdir(self.tracks_dir)
-        dj_dir = Disjoint(self.data_rm, tracks_in_dir, datatype2='list')
-        copy_to_tracks_dir = dj_dir.not_in_data2()
-        n_tracks_to_copy = len(copy_to_tracks_dir)
-        if n_tracks_to_copy > 0:
-            raise FileNotFoundError(f'{n_tracks_to_copy} tracks need to be copied to tracks_dir: {copy_to_tracks_dir}')
+        self.disjoint = Disjoint(self.data_rm, self.data_mm, self.tracks_dir)
+        self.disjoint.check_missing_filenames_in_tracks_dir()
 
     def _check_added_removed_tracks(self):
-        dj_data = Disjoint(self.data_rm, self.data_mm)
-        self.added_indexes_rm = dj_data.get_indexes(type='not_in_data2')
-        self.added = dj_data.not_in_data2()
-        self.removed = dj_data.not_in_data1()
-        self.n_changes = len(self.added) + len(self.removed)
+        self.filenames_added = self.disjoint.get_added_tracks()
+        self.filenames_removed = self.disjoint.get_removed_tracks()
+        self.filenames_wave = self.disjoint.get_tracks_for_wave_analysis()
 
     def _calculate_popularity(self, data_mm):
         self.popularity = Popularity(data_mm, self.my_music_path)
         self.popularity.get()
 
     def _data_versioning(self):
-        self.version = Versioning(self.data_mm, self.my_music_path, self.added, self.removed)
+        self.version = Versioning(self.data_mm, self.my_music_path, self.filenames_wave, self.filenames_removed)
         self.version.get_version()
         self.version.expand_versions_of_existing_tracks()
 
-    def _init_feature_getters(self):
+    def _get_sp_yt_features(self):
         credentials = load_credentials(self.credential_path)
-        self.sf = SpotifyFeatures(rb_data=self.data_rm, credentials=credentials['sp'])
-        self.yf = YoutubeFeatures(rb_data=self.data_rm, credentials=credentials['yt'])
-        self.wf = WaveFeatures(tracks_dir=self.tracks_dir, rb_data=self.data_rm)
+        sf = SpotifyFeatures(rb_data=self.data_rm, credentials=credentials['sp'])
+        yf = YoutubeFeatures(rb_data=self.data_rm, credentials=credentials['yt'])
+        progress = Progress()
+        for fn in self.filenames_added:
+            i = find(self.data_rm, 'File Name', fn)
 
-    def _get_all_features(self, i):
-        all_features = {}
+            data_mm = load(self.my_music_path)
+            sp_yt_features = {}
 
-        all_features.update(self.data_rm[i])
+            sp_yt_features.update(self.data_rm[i])
 
-        self.sf.get(i)
-        all_features.update(self.sf.spotify_features)
+            sf.get(i)
+            sp_yt_features.update(sf.spotify_features)
 
-        self.yf.get(i)
-        all_features.update(self.yf.youtube_features)
+            yf.get(i)
+            sp_yt_features.update(yf.youtube_features)
 
-        self.wf.get(i)
-        all_features.update(self.wf.wave_features)
+            fi = FeaturesImprovement(sp_yt_features)
+            fi.improve()
 
-        fi = FeaturesImprovement(all_features)
-        fi.improve()
+            sp_yt_features = fi.af.copy()
 
-        all_features = fi.af.copy()
+            # update tracks where connection errors occurred
+            ce = ConnectionErrors(sp_yt_features, data_mm, self.data_rm, sf, yf)
+            data_mm = ce.handle()
 
-        all_features.update(self.version.set_version_column())
+            data_mm.append(sp_yt_features)
+            dump(data_mm, self.my_music_path)
 
-        return all_features
+            progress.show(self.filenames_added, fn)
 
-    def _retry_connection_error_features(self, all_features, data_mm):
-        ce = ConnectionErrors(all_features, data_mm, self.data_rm, self.sf, self.yf)
-        data_mm = ce.handle()
+    def _get_wave_features(self, data_mm):
+        wf = WaveFeatures(tracks_dir=self.tracks_dir, rb_data=self.data_rm)
+        progress = Progress()
+        for fn in self.filenames_wave:
+            i_rm = find(self.data_rm, 'File Name', fn)
+            i_mm = find(data_mm, 'File Name', fn)
 
-        return data_mm
+            data_mm = load(self.my_music_path)
+            all_features = data_mm[i_mm]
+
+            wf.get(i_rm)
+            all_features.update(wf.wave_features)
+
+            all_features.update(self.version.set_version_column())
+
+            del data_mm[i_mm]
+            data_mm.append(all_features)
+            dump(data_mm, self.my_music_path)
+
+            progress.show(self.filenames_wave, fn)
 
     def run(self):
 
         self._load_data()
+
         self._check_vocalness_feature_interruption()
+
         self._check_missing_tracks_in_dir()
+
         self._check_added_removed_tracks()
 
-        if self.n_changes == 0:
+        if self.disjoint.n_changes == 0:
+
             self._calculate_popularity(self.data_mm)
+
         else:
             self._data_versioning()
-            self._init_feature_getters()
 
-            progress = Progress()
-            for i in self.added_indexes_rm:
-                data_mm = load(self.my_music_path)
-                all_features = self._get_all_features(i)
-                data_mm = self._retry_connection_error_features(all_features, data_mm)
-                data_mm.append(all_features)
-                dump(data_mm, self.my_music_path)
-                progress.show(self.added_indexes_rm, i)
+            self._get_sp_yt_features()
 
             data_mm = load(self.my_music_path)
+
             self._calculate_popularity(data_mm)
+
+            self._get_wave_features(data_mm)

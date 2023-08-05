@@ -52,6 +52,7 @@ def overrule_connection_errors(func, verbose=1, empty=None):
                 requests.exceptions.ReadTimeout,
                 requests.exceptions.ConnectionError,
                 urllib3.exceptions.ReadTimeoutError,
+                urllib3.exceptions.ProtocolError,
                 socket.timeout,
                 spotipy.exceptions.SpotifyException,
                 httplib2.error.ServerNotFoundError) as error:
