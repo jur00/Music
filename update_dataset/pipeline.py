@@ -11,11 +11,13 @@ from update_dataset.helpers import Progress
 
 # set global variables
 tracks_dir = 'D:\\Data Science\\Lake\\music\\tracks_my\\'
-file_dir = 'files\\test_data\\update_dataset'
+file_dir = 'files\\data\\update_dataset'
 my_music_fn = 'music_my.sav'
 my_music_path = Path(file_dir, my_music_fn)
-rekordbox_music_fn = 'music_rekordbox_chunk_2.txt'
+rekordbox_music_fn = 'music_rekordbox.txt'
+rekordbox_music_version_check_fn = 'music_rekordbox_version_check.txt'
 rekordbox_music_path = Path(file_dir, rekordbox_music_fn)
+rekordbox_music_version_check_path = Path(file_dir, rekordbox_music_version_check_fn)
 credential_dir = ''
 credential_fn = 'credentials.json'
 credential_path = Path(credential_dir, credential_fn)
@@ -55,7 +57,9 @@ if disjoint.n_changes == 0:
     popularity.get()
 else:
     # create new version number
-    version = Versioning(data_mm, my_music_path, filenames_wave, filenames_removed)
+    version = Versioning(data_rm, rekordbox_music_path, rekordbox_music_version_check_path,
+                         data_mm, my_music_path, filenames_wave, filenames_removed)
+    version.check_new_rekordbox_file()
     version.get_version()
     version.expand_versions_of_existing_tracks()
 

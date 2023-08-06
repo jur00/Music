@@ -1,12 +1,6 @@
 import pandas as pd
 from joblib import load, dump
 import numpy as np
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-from googleapiclient.discovery import build
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from pytube import extract
 from unidecode import unidecode
 from datetime import datetime
@@ -21,18 +15,13 @@ import subprocess
 import shutil
 import warnings
 import os
-import json
 
-from update_dataset.helpers import (jaccard_similarity, neutralize, overrule_connection_errors,
+from update_dataset.helpers import (jaccard_similarity, neutralize,
                                     create_name_string, check_original, add_or_remove_original,
                                     set_dir, levenshtein_distance, find, on_rm_error)
-
-
-def load_credentials(path):
-    with open(path, 'rb') as f:
-        credentials = json.load(f)
-
-    return credentials
+from base.spotify_youtube import (get_spotify_audio_features, search_spotify_tracks, get_youtube_link,
+                                  find_youtube_elements, get_youtube_video_properties)
+from base.connect import (SpotifyConnect, YoutubeConnect)
 
 
 class RekordboxMusic:
@@ -133,10 +122,14 @@ class ExplorerInterruption:
 
     def change_shortened_filenames(self):
         data_rm_filenames_original = [d['File Name'] for d in self.data_rm]
-        data_rm_filenames_short = [re.sub(r'[^0-9a-zA-Z]+', '', filename) for filename in data_rm_filenames_original]
+        data_rm_filenames_short = [
+            re.sub(r'[^0-9a-zA-Z]+', '', os.path.splitext(filename)[0]) + os.path.splitext(filename)[1]
+            for filename in data_rm_filenames_original]
+
         with set_dir(self.tracks_dir):
+            dir_filenames = os.listdir()
             for fn_original, fn_short in zip(data_rm_filenames_original, data_rm_filenames_short):
-                if fn_short in os.listdir():
+                if (fn_short in dir_filenames) & (fn_short != fn_original):
                     os.rename(fn_short, fn_original)
 
     def empty_output_map(self):
@@ -181,21 +174,6 @@ class Disjoint:
         self.filenames_wave = self.filenames_added + [d['File Name'] for d in self.data_mm if 'sample_rate' not in d.keys()]
         self.n_changes = len(self.filenames_wave)
         return self.filenames_wave
-
-class SpotifyConnect:
-
-    def __init__(self, credentials):
-        self.sp = self.__make_spotify(credentials)
-
-    @staticmethod
-    def __make_spotify(credentials):
-        cid = credentials['cid']
-        secret = credentials['secret']
-        ccm = SpotifyClientCredentials(client_id=cid,
-                                       client_secret=secret)
-        sp = spotipy.Spotify(client_credentials_manager=ccm)
-
-        return sp
 
 
 class SpotifyFeatures(SpotifyConnect):
@@ -247,7 +225,7 @@ class SpotifyFeatures(SpotifyConnect):
         features_list = ['id', 'danceability', 'energy', 'valence', 'instrumentalness',
                          'speechiness', 'acousticness', 'loudness', 'key', 'mode']
         if len(self.track_main_features['sp_id']) > 0:
-            audio_features, self.conn_error_audio = overrule_connection_errors(self.sp.audio_features(sp_id))
+            audio_features, self.conn_error_audio = get_spotify_audio_features(self.sp, sp_id)
             self.track_audio_features = {f'sp_{feature}': audio_features[0][f'{feature}'] for feature in features_list}
         else:
             self.track_audio_features = {f'sp_{feature}': 0 for feature in features_list}
@@ -255,8 +233,7 @@ class SpotifyFeatures(SpotifyConnect):
     def _search(self):
         query_name_parts = ['Artist', 'Mix Name']
         artist_track = create_name_string(self.rb_data, self.i, query_name_parts)
-        self.results, self.conn_error_main = overrule_connection_errors(
-            self.sp.search(q=artist_track, type="track", limit=50))
+        self.results, self.conn_error_main = search_spotify_tracks(self.sp, artist_track)
         self.results = self.results['tracks']['items']
 
     def _identify_most_similar_spotify_name(self, compare_name, similarities):
@@ -311,25 +288,6 @@ class SpotifyFeatures(SpotifyConnect):
         return similarities
 
 
-class YoutubeConnect:
-
-    def __init__(self, credentials):
-        self.youtube, self.driver = self.__make_youtube(credentials)
-
-    @staticmethod
-    def __make_youtube(credentials):
-        youtube = build('youtube', 'v3', developerKey=credentials['api_key'])
-        browser_option = webdriver.ChromeOptions()
-        browser_option.add_argument('--no-sandbox')
-        browser_option.add_argument('--headless')
-        browser_option.add_argument('--disable-dev-shm-usage')
-        browser_option.add_argument('--log-level=3')
-        browser_option.add_experimental_option('excludeSwitches', ['enable-logging'])
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager(version='114.0.5735.90').install()), options=browser_option)
-
-        return youtube, driver
-
-
 class YoutubeFeatures(YoutubeConnect):
 
     def __init__(self, rb_data, credentials):
@@ -351,10 +309,10 @@ class YoutubeFeatures(YoutubeConnect):
         return 'https://www.youtube.com/results?search_query=' + search_query
 
     def _input_link(self, link):
-        overrule_connection_errors(self.driver.get(link))
+        get_youtube_link(self.driver, link)
 
     def _search(self):
-        return overrule_connection_errors(self.driver.find_elements('xpath', '//*[@id="video-title"]'))
+        return find_youtube_elements(self.driver)
 
     @staticmethod
     def _extract_youtube_id(user_data):
@@ -362,8 +320,7 @@ class YoutubeFeatures(YoutubeConnect):
         return extract.video_id(youtube_url)
 
     def _pull_features(self, yt_id):
-        return overrule_connection_errors(self.youtube.videos().list(part='snippet,statistics,contentDetails',
-                                                                     id=yt_id).execute())
+        return get_youtube_video_properties(self.youtube, yt_id)
 
     @staticmethod
     def _set_features(yt_result):
@@ -805,7 +762,7 @@ class Popularity:
         n_popularities = np.sum(popularities_in_data)
         self.complete = n_popularities == len(self.data)
         if self.complete:
-            print('Dataset up to date')
+            print('Spotify and Youtube features up to date')
         else:
             self._calculate_popularity_score()
             dump(self.data, self.my_music_path)
@@ -848,23 +805,48 @@ class Popularity:
 
 class Versioning:
 
-    def __init__(self, data_mm, my_music_path, added, removed):
+    def __init__(self,
+                 data_rm,
+                 rekordbox_music_path,
+                 rekordbox_music_version_check_path,
+                 data_mm,
+                 my_music_path,
+                 added,
+                 removed):
 
+        self.data_rm = data_rm
+        self.rekordbox_music_path = rekordbox_music_path
+        self.rekordbox_music_version_check_path = rekordbox_music_version_check_path
         self.data_mm = data_mm
         self.my_music_path = my_music_path
         self.added = added
         self.removed = removed
 
+        rm_vc = RekordboxMusic(rekordbox_music_version_check_path)
+        self.data_rm_vc = rm_vc.get()
+
+        self.new_version = None
         self.version = None
+
+    def _replace_rekordbox_file(self):
+        with open(self.rekordbox_music_path, 'r', encoding='utf-16') as f:
+            rekordbox_raw = f.read()
+        with open(self.rekordbox_music_version_check_path, 'w', encoding='utf-16') as f:
+            f.write(rekordbox_raw)
+
+    def check_new_rekordbox_file(self):
+        if self.data_rm == self.data_rm_vc:
+            self.new_version = False
+        else:
+            self.new_version = True
+            self._replace_rekordbox_file()
 
     def get_version(self):
         if len(self.data_mm) == 0:
             self.version = 1
         else:
-            version_cols = [int(version_col.split('_')[-1])
-                            for version_col in self.data_mm[0].keys()
-                            if version_col.startswith('version_')]
-            self.version = len(version_cols) + 1
+            version_cols = [col for col in pd.DataFrame(self.data_mm).columns if col.startswith('version_')]
+            self.version = len(version_cols) + int(self.new_version)
 
     def set_version_column(self):
         if self.version > 1:

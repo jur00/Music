@@ -1,16 +1,11 @@
 from unidecode import unidecode
 import re
 import time
-import requests
-import socket
-import urllib3
-import httplib2
+
 from contextlib import contextmanager
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import stat
-
-import spotipy
 
 def jaccard_similarity(test, real):
     intersection = set(test).intersection(set(real))
@@ -34,34 +29,6 @@ def levenshtein_distance(s1, s2):
 
 def neutralize(string):
     return unidecode(re.sub(r'[^a-zA-Z 0-9À-ú]+', '', string)).lower()
-
-def overrule_connection_errors(func, verbose=1, empty=None):
-    if empty is None:
-        empty = {}
-    output = empty
-    conn_error = True
-    sleep_counter = 0
-    while conn_error & (sleep_counter < 300):
-        try:
-            output = func
-            conn_error = False
-        except (ConnectionError,
-                ConnectionResetError,
-                ConnectionRefusedError,
-                ConnectionAbortedError,
-                requests.exceptions.ReadTimeout,
-                requests.exceptions.ConnectionError,
-                urllib3.exceptions.ReadTimeoutError,
-                urllib3.exceptions.ProtocolError,
-                socket.timeout,
-                spotipy.exceptions.SpotifyException,
-                httplib2.error.ServerNotFoundError) as error:
-            sleep_counter += 1
-            if verbose > 0:
-                print('got an error, trying again...', end='\r')
-            time.sleep(1)
-
-    return output, conn_error
 
 def create_name_string(rb_data, i, name_parts):
     return neutralize(' '.join([v for k, v in rb_data[i].items() if k in name_parts]).strip())
@@ -103,14 +70,27 @@ class Progress:
         counter = loop_space.index(current_loop) + 1
         fraction_done = counter / n
 
-        progress_precentage = str(round(fraction_done * 100, 2)) + "%"
+        progress_percentage = str(round(fraction_done * 100, 2)) + "%"
         now = time.time()
         eta = self.start + ((now - self.start) / fraction_done)
         time_completed = datetime.fromtimestamp(eta).strftime("%Y-%m-%d %H:%M:%S")
+        delta = datetime.fromtimestamp(eta) - datetime.fromtimestamp(now)
+        days = delta.days
+        hours, remainder = divmod(delta.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        time_to_go = ''
+        if days > 0:
+            time_to_go += f'{days} days, '
+        if hours > 0:
+            time_to_go += f'{hours} hours, '
+        if minutes > 0:
+            time_to_go += f'{minutes} minutes and '
+
+        time_to_go += f'{seconds} seconds'
 
         average_compute_time = (now - self.start) / counter
-        minutes = int(average_compute_time / 60)
-        seconds = int(average_compute_time % 60)
-        print('Done: {} / {} ({}), ETA: {}, Average time per loop: {} minutes and {} seconds'.
-              format(counter, n, progress_precentage, time_completed, minutes, seconds),
+        avg_minutes = int(average_compute_time / 60)
+        avg_seconds = int(average_compute_time % 60)
+        print(f'Done: {counter} / {n} ({progress_percentage}), ETA: {time_completed} ({time_to_go}), '
+              f'Average time per loop: {avg_minutes} minutes and {avg_seconds} seconds',
               end='\r')

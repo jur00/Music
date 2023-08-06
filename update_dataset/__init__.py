@@ -4,9 +4,10 @@ from pathlib import Path
 from joblib import load, dump
 
 from update_dataset.helpers import find, Progress
-from update_dataset.engineering import (load_credentials, RekordboxMusic, ExplorerInterruption,
+from update_dataset.engineering import (RekordboxMusic, ExplorerInterruption,
                                         Disjoint, SpotifyFeatures, YoutubeFeatures, WaveFeatures,
                                         FeaturesImprovement, Popularity, Versioning, ConnectionErrors)
+from base.connect import load_credentials
 
 
 class UpdateDataset:
@@ -25,6 +26,8 @@ class UpdateDataset:
         self.tracks_dir = tracks_dir
         self.my_music_path = Path(file_dir, my_music_fn)
         self.rekordbox_music_path = Path(file_dir, rekordbox_music_fn)
+        rb_fn, rb_ext = os.path.splitext(rekordbox_music_fn)
+        self.rekordbox_music_version_check_path = Path(file_dir, f'{rb_fn}_version_check{rb_ext}')
         self.credential_path = Path(credential_dir, credential_fn)
 
         self.data_mm = None
@@ -63,9 +66,12 @@ class UpdateDataset:
         self.popularity.get()
 
     def _data_versioning(self):
-        self.version = Versioning(self.data_mm, self.my_music_path, self.filenames_wave, self.filenames_removed)
+        self.version = Versioning(self.data_rm, self.rekordbox_music_path, self.rekordbox_music_version_check_path,
+                                  self.data_mm, self.my_music_path, self.filenames_wave, self.filenames_removed)
+        self.version.check_new_rekordbox_file()
         self.version.get_version()
-        self.version.expand_versions_of_existing_tracks()
+        if self.version.new_version:
+            self.version.expand_versions_of_existing_tracks()
 
     def _get_sp_yt_features(self):
         credentials = load_credentials(self.credential_path)
