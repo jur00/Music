@@ -1,34 +1,29 @@
+from config import Config
+
 import os
 from pathlib import Path
 
 from joblib import load, dump
 
-from update_dataset.helpers import find, Progress
+
+from base.helpers import Progress
+from update_dataset.helpers import find
 from update_dataset.engineering import (RekordboxMusic, ExplorerInterruption,
                                         Disjoint, SpotifyFeatures, YoutubeFeatures, WaveFeatures,
                                         FeaturesImprovement, Popularity, Versioning, ConnectionErrors)
-from base.connect import load_credentials
 
 
 class UpdateDataset:
 
-    def __init__(self,
-                 working_dir,
-                 tracks_dir,
-                 file_dir,
-                 my_music_fn,
-                 rekordbox_music_fn,
-                 credential_dir,
-                 credential_fn):
+    def __init__(self):
 
-        os.chdir(working_dir)
+        os.chdir(Config.working_dir)
 
-        self.tracks_dir = tracks_dir
-        self.my_music_path = Path(file_dir, my_music_fn)
-        self.rekordbox_music_path = Path(file_dir, rekordbox_music_fn)
-        rb_fn, rb_ext = os.path.splitext(rekordbox_music_fn)
-        self.rekordbox_music_version_check_path = Path(file_dir, f'{rb_fn}_version_check{rb_ext}')
-        self.credential_path = Path(credential_dir, credential_fn)
+        self.tracks_dir = Config.tracks_dir
+        self.my_music_path = Path(Config.data_dir, Config.my_music_fn)
+        self.rekordbox_music_path = Path(Config.data_dir, Config.rekordbox_music_fn)
+        rb_fn, rb_ext = os.path.splitext(Config.rekordbox_music_fn)
+        self.rekordbox_music_version_check_path = Path(Config.data_dir, f'{rb_fn}_version_check{rb_ext}')
 
         self.data_mm = None
         self.data_rm = None
@@ -41,8 +36,12 @@ class UpdateDataset:
         self.sf = None
         self.yf = None
         self.wf = None
+        self.__quick_test = False
 
     def _load_data(self):
+        print("Loading data, don't interrupt", end='\r')
+        if not os.path.exists(self.my_music_path):
+            dump([], self.my_music_path)
         self.data_mm = load(self.my_music_path)
         rm = RekordboxMusic(self.rekordbox_music_path)
         self.data_rm = rm.get()
@@ -53,7 +52,7 @@ class UpdateDataset:
         ei.empty_output_map()
 
     def _check_missing_tracks_in_dir(self):
-        self.disjoint = Disjoint(self.data_rm, self.data_mm, self.tracks_dir)
+        self.disjoint = Disjoint(self.data_rm, self.data_mm, self.tracks_dir, self.__quick_test)
         self.disjoint.check_missing_filenames_in_tracks_dir()
 
     def _check_added_removed_tracks(self):
@@ -67,16 +66,15 @@ class UpdateDataset:
 
     def _data_versioning(self):
         self.version = Versioning(self.data_rm, self.rekordbox_music_path, self.rekordbox_music_version_check_path,
-                                  self.data_mm, self.my_music_path, self.filenames_wave, self.filenames_removed)
+                                  self.data_mm, self.my_music_path, self.filenames_added, self.filenames_removed)
         self.version.check_new_rekordbox_file()
         self.version.get_version()
         if self.version.new_version:
             self.version.expand_versions_of_existing_tracks()
 
     def _get_sp_yt_features(self):
-        credentials = load_credentials(self.credential_path)
-        sf = SpotifyFeatures(rb_data=self.data_rm, credentials=credentials['sp'])
-        yf = YoutubeFeatures(rb_data=self.data_rm, credentials=credentials['yt'])
+        sf = SpotifyFeatures(rb_data=self.data_rm)
+        yf = YoutubeFeatures(rb_data=self.data_rm)
         progress = Progress()
         for fn in self.filenames_added:
             i = find(self.data_rm, 'File Name', fn)
@@ -102,6 +100,8 @@ class UpdateDataset:
             data_mm = ce.handle()
 
             data_mm.append(sp_yt_features)
+
+            print("Dumping data, don't interrupt", end='\r')
             dump(data_mm, self.my_music_path)
 
             progress.show(self.filenames_added, fn)
@@ -116,18 +116,24 @@ class UpdateDataset:
             data_mm = load(self.my_music_path)
             all_features = data_mm[i_mm]
 
-            wf.get(i_rm)
-            all_features.update(wf.wave_features)
+            if not self.__quick_test:
+                wf.get(i_rm)
+                all_features.update(wf.wave_features)
+            else:
+                all_features.update({'wave_col': None})
 
             all_features.update(self.version.set_version_column())
 
             del data_mm[i_mm]
             data_mm.append(all_features)
+
+            print("Dumping data, don't interrupt", end='\r')
             dump(data_mm, self.my_music_path)
 
             progress.show(self.filenames_wave, fn)
 
-    def run(self):
+    def run(self, quick_test=False):
+        self.__quick_test = quick_test
 
         self._load_data()
 
@@ -142,6 +148,7 @@ class UpdateDataset:
             self._calculate_popularity(self.data_mm)
 
         else:
+
             self._data_versioning()
 
             self._get_sp_yt_features()

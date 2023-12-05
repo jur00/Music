@@ -1,27 +1,29 @@
-import pandas as pd
-from joblib import load, dump
-import numpy as np
-from pytube import extract
+import subprocess
+import warnings
+import os
+import shutil
 from unidecode import unidecode
 from datetime import datetime
 import re
 import time
+
+import pandas as pd
+from joblib import load, dump
+import numpy as np
+from pytube import extract
 import librosa
 from spafe.features.gfcc import gfcc
 from entropy_estimators import continuous
 from scipy.stats.mstats import gmean
 from scipy.stats import kurtosis, skew, beta
-import subprocess
-import shutil
-import warnings
-import os
 
-from update_dataset.helpers import (jaccard_similarity, neutralize,
-                                    create_name_string, check_original, add_or_remove_original,
-                                    set_dir, levenshtein_distance, find, on_rm_error)
 from base.spotify_youtube import (get_spotify_audio_features, search_spotify_tracks, get_youtube_link,
                                   find_youtube_elements, get_youtube_video_properties)
 from base.connect import (SpotifyConnect, YoutubeConnect)
+from base.helpers import levenshtein_distance
+from update_dataset.helpers import (jaccard_similarity, neutralize,
+                                    create_name_string, check_original, add_or_remove_original,
+                                    set_dir, find, on_rm_error)
 
 
 class RekordboxMusic:
@@ -142,10 +144,11 @@ class ExplorerInterruption:
 
 class Disjoint:
 
-    def __init__(self, data_rm, data_mm, tracks_dir):
+    def __init__(self, data_rm, data_mm, tracks_dir, quick_test):
         self.data_rm = data_mm
         self.data_mm = data_mm
         self.tracks_dir = tracks_dir
+        self.__quick_test = quick_test
 
         self.filenames_rm = set([d['File Name'] for d in data_rm])
         self.filenames_mm = set([d['File Name'] for d in data_mm])
@@ -171,16 +174,17 @@ class Disjoint:
         return self.filenames_removed
 
     def get_tracks_for_wave_analysis(self):
-        self.filenames_wave = self.filenames_added + [d['File Name'] for d in self.data_mm if 'sample_rate' not in d.keys()]
+        check_col = 'wave_col' if self.__quick_test else 'sample_rate'
+        self.filenames_wave = self.filenames_added + [d['File Name'] for d in self.data_mm if check_col not in d.keys()]
         self.n_changes = len(self.filenames_wave)
         return self.filenames_wave
 
 
 class SpotifyFeatures(SpotifyConnect):
 
-    def __init__(self, rb_data, credentials):
+    def __init__(self, rb_data):
 
-        super().__init__(credentials)
+        super().__init__()
 
         self.rb_data = rb_data
 
@@ -290,8 +294,8 @@ class SpotifyFeatures(SpotifyConnect):
 
 class YoutubeFeatures(YoutubeConnect):
 
-    def __init__(self, rb_data, credentials):
-        super().__init__(credentials)
+    def __init__(self, rb_data):
+        super().__init__()
 
         self.rb_data = rb_data
 
@@ -822,24 +826,30 @@ class Versioning:
         self.added = added
         self.removed = removed
 
+        self.__create_version_check_file_if_not_exist()
         rm_vc = RekordboxMusic(rekordbox_music_version_check_path)
         self.data_rm_vc = rm_vc.get()
 
         self.new_version = None
         self.version = None
 
+    def __create_version_check_file_if_not_exist(self):
+        if not os.path.exists(self.rekordbox_music_version_check_path):
+            shutil.copy(self.rekordbox_music_path, self.rekordbox_music_version_check_path)
+            while not os.path.exists(self.rekordbox_music_version_check_path):
+                time.sleep(1)
+
     def _replace_rekordbox_file(self):
-        with open(self.rekordbox_music_path, 'r', encoding='utf-16') as f:
-            rekordbox_raw = f.read()
-        with open(self.rekordbox_music_version_check_path, 'w', encoding='utf-16') as f:
-            f.write(rekordbox_raw)
+        shutil.copy(self.rekordbox_music_path, self.rekordbox_music_version_check_path)
 
     def check_new_rekordbox_file(self):
-        if self.data_rm == self.data_rm_vc:
+        df_rm = pd.DataFrame(self.data_rm)
+        df_rm_vc = pd.DataFrame(self.data_rm_vc)
+        if df_rm.equals(df_rm_vc):
             self.new_version = False
         else:
             self.new_version = True
-            self._replace_rekordbox_file()
+        self._replace_rekordbox_file()
 
     def get_version(self):
         if len(self.data_mm) == 0:

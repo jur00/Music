@@ -1,3 +1,5 @@
+from config import Config
+
 import json
 
 import spotipy
@@ -13,10 +15,12 @@ def load_credentials(path):
 
     return credentials
 
+credential_dict = {sp_yt: load_credentials(Config.credential_path)[sp_yt] for sp_yt in ['sp', 'yt']}
+
 class SpotifyConnect:
 
-    def __init__(self, credentials):
-        self.sp = self.__make_spotify(credentials)
+    def __init__(self):
+        self.sp = self.__make_spotify(credential_dict['sp'])
 
     @staticmethod
     def __make_spotify(credentials):
@@ -30,8 +34,8 @@ class SpotifyConnect:
 
 class YoutubeConnect:
 
-    def __init__(self, credentials):
-        self.youtube, self.driver = self.__make_youtube(credentials)
+    def __init__(self):
+        self.youtube, self.driver = self.__make_youtube(credential_dict['yt'])
 
     @staticmethod
     def __make_youtube(credentials):
@@ -42,6 +46,7 @@ class YoutubeConnect:
         browser_option.add_argument('--disable-dev-shm-usage')
         browser_option.add_argument('--log-level=3')
         browser_option.add_experimental_option('excludeSwitches', ['enable-logging'])
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager(version='114.0.5735.90').install()), options=browser_option)
+        # driver = webdriver.Chrome(service=Service(ChromeDriverManager(version='116.0.5845.96').install()), options=browser_option)
+        driver = webdriver.Chrome('C:\\chromedriver_win64\\chromedriver.exe', options=browser_option)
 
         return youtube, driver
