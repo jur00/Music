@@ -94,7 +94,7 @@ else:
         data_mm.append(sp_yt_features)
         dump(data_mm, my_music_path)
 
-        progress.show(filenames_added, fn)
+        progress.show(fn, filenames_added)
 
     data_mm = load(my_music_path)
     popularity = Popularity(data_mm, my_music_path)
@@ -118,5 +118,5 @@ else:
         data_mm.append(all_features)
         dump(data_mm, my_music_path)
 
-        progress.show(filenames_wave, fn)
+        progress.show(fn, filenames_wave)
 

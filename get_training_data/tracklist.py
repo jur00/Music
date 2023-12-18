@@ -4,11 +4,14 @@ import pandas as pd
 import numpy as np
 from joblib import load, dump
 from tqdm import tqdm
+from unidecode import unidecode
+import re
 
 from base.helpers import levenshtein_distance
 from base.connect import SpotifyConnect
 from base.spotify_youtube import (get_spotify_recommendations, get_spotify_track, get_spotify_artist_top_tracks,
                                   get_spotify_audio_features)
+
 
 class SelectTrainingTracklist:
 
@@ -46,8 +49,6 @@ class SelectTrainingTracklist:
 
     def load(self):
         self.df = pd.DataFrame(load(self.my_music_path))
-        # self.df = self.df.sample(n=20, random_state=8)
-
         self.df_tracklist_base = load(self.path_df)
 
     def get_n_versions(self):
@@ -60,6 +61,7 @@ class SelectTrainingTracklist:
 
     def select_n_tracks(self):
         self.n_tracks_to_go = self.df_tracklist.shape[0]
+        print(f'{self.__class__.__name__}: {self.n_tracks_to_go} tracks to go')
         if self.n_tracks_to_go == 0:
             print(f'For all tracks {self.__class__.__name__} are done.')
         elif self.n_tracks_to_go >= self.n_tracks:
@@ -137,6 +139,9 @@ class Recommendations(SelectTrainingTracklist):
         self.filter_df()
 
         self.select_n_tracks()
+
+        if self.df_tracklist.shape[0] == 0:
+            return None
 
         self.decide_n_recommendations_per_track()
 
@@ -235,6 +240,9 @@ class ArtistTracks(SelectTrainingTracklist):
 
         self.select_n_tracks()
 
+        if self.df_tracklist.shape[0] == 0:
+            return None
+
         self.collect_artist_ids()
 
         self.explode_artists()
@@ -248,38 +256,95 @@ class ArtistTracks(SelectTrainingTracklist):
         self.write_training_df()
 
 
-# class AssembleTrainingTracklist:
-#
-#     def __init__(self):
-#         pass
-#
-#
-#
-#         self.df = None
-#         self.n_versions = None
-#         self.rs = None
-#
-#         self.df_training_tracks = None
-#         self.rec = None
-#
-#     def get_training_tracks(self):
-#         self.rec = self._recommendations()
-#         self.df_training_tracks = pd.concat([self._recommendations(), self._artist_top_tracks()])
-#
-#     def deduplicate(self):
-#         self.df_training_tracks = self.df_training_tracks.drop_duplicates(
-#             subset=['track_artists', 'track_name']
-#         ).reset_index(drop=True)
-#
-#     def run(self):
-#
-#         self.load()
-#
-#         self.get_n_versions()
-#
-#         self.get_training_tracks()
-#
-#         self.deduplicate()
+class AssembleCleanTracklist:
+
+    def __init__(self):
+        self.df_artists_top = None
+        self.df_recommendations = None
+        self.df_my_music = None
+
+        self.sp = SpotifyConnect().sp
+
+        self.df = None
+        self.df_base = None
+
+    def load(self):
+        self.df_artists_top = load(Config.training_artist_tracks_path)
+        self.df_recommendations = load(Config.training_recommendations_path)
+        self.df_my_music = pd.DataFrame(load(Config.my_music_path))
+        self.df_base = load(Config.training_tracklist_path)
+
+    def assemble_artist_top_and_recommendations_dfs(self):
+        self.df = (pd
+                   .concat([self.df_artists_top, self.df_recommendations])
+                   .drop_duplicates(subset=['track_artists', 'track_name'])
+                   .dropna()
+                   .reset_index(drop=True)
+                   )
+
+    @staticmethod
+    def add_track_artist_comb_col(xdf, artist_col, trackname_col):
+        xdf = xdf.assign(track_artist_name=xdf[artist_col] + ' - ' + xdf[trackname_col])
+        xdf['track_artist_name'] = (
+            xdf['track_artist_name'].apply(
+                lambda x: unidecode(re.sub(r'[^a-zA-Z 0-9À-ú]+', '', str(x)))
+            ).str.lower())
+        return xdf
+
+    def remove_my_tracks_from_tracklist(self):
+        self.df_my_music = self.df_my_music.pipe(self.add_track_artist_comb_col, 'sp_artist', 'sp_trackname')
+        self.df = self.df.pipe(self.add_track_artist_comb_col, 'track_artists', 'track_name')
+
+        self.df = self.df.loc[~self.df['track_artist_name'].isin(self.df_my_music['track_artist_name'])]
+
+    def remove_existing_tracks(self):
+        self.df = self.df.loc[~self.df['track_artist_name'].isin(self.df_base['track_artist_name'])]
+
+    @staticmethod
+    def get_audio_features(track_id, sp):
+        audio_features, _ = get_spotify_audio_features(sp, track_id)
+
+        danceability = audio_features[0]['danceability']
+        energy = audio_features[0]['energy']
+        valence = audio_features[0]['valence']
+        instrumentalness = audio_features[0]['instrumentalness']
+        acousticness = audio_features[0]['acousticness']
+        key = audio_features[0]['key']
+        mode = audio_features[0]['mode']
+
+        return danceability, energy, valence, instrumentalness, acousticness, key, mode
+
+    def collect_audio_features(self):
+        print('Collecting audio features')
+        tqdm.pandas()
+        (self.df['track_danceability'], self.df['track_energy'], self.df['track_valence'],
+         self.df['track_instrumentalness'], self.df['track_acousticness'], self.df['track_key'],
+         self.df['track_mode']) = zip(*self.df['track_id'].progress_apply(self.get_audio_features, args=(self.sp,)))
+
+    def write(self):
+        df_total = (pd
+                    .concat([self.df_base, self.df])
+                    .drop_duplicates(subset='track_id')
+                    .reset_index(drop=True))
+        df_total['track_artist_name'] = df_total['track_artist_name'].str.replace('  ', ' ')
+        dump(df_total, Config.training_tracklist_path)
+
+    def run(self):
+        self.load()
+
+        self.assemble_artist_top_and_recommendations_dfs()
+
+        self.remove_my_tracks_from_tracklist()
+
+        self.remove_existing_tracks()
+
+        print(f'{self.df.shape[0]} tracks to go')
+        self.df = self.df.sample(n=5)
+
+        self.collect_audio_features()
+
+        self.write()
+
 
 rc = Recommendations()
 rc.run()
@@ -287,21 +352,78 @@ rc.run()
 at = ArtistTracks()
 at.run()
 
+act = AssembleCleanTracklist()
+act.run()
 
-def get_audio_features(track_id, sp):
-    audio_features, _ = get_spotify_audio_features(sp, track_id)
+from joblib import load, dump
+import pandas as pd
+from config import Config
+from tkinter import Tk
+import pyperclip
+import pyautogui as pyauto
+import time
 
-    danceability = audio_features[0]['danceability']
-    energy = audio_features[0]['energy']
-    valence = audio_features[0]['valence']
-    instrumentalness = audio_features[0]['instrumentalness']
-    acousticness = audio_features[0]['acousticness']
-    key = audio_features[0]['key']
-    mode = audio_features[0]['mode']
+tk = Tk()
 
-    return danceability, energy, valence, instrumentalness, acousticness, key, mode
+df = load(Config.training_tracklist_path)
 
 
-(dfe['track_danceability'], dfe['track_energy'], dfe['track_valence'],
- dfe['track_instrumentalness'], dfe['track_acousticness'], dfe['track_key'],
- dfe['track_mode']) = zip(*dfe['track_id'].apply(get_audio_features, args=(sp,)))
+
+def search_song(song):
+    # for downloading via soulseek, open soulseek in full-screen and navigate to the 'Manual Search' section. the
+    # location parameters of the mouse-clicks depend on the screen resulution. I use a standard (1920x1080) resolution.
+    time.sleep(5)
+    pyperclip.copy(song)
+    pyauto.click((53, 150))
+    pyauto.hotkey("ctrl", "v")
+    pyauto.press('enter')
+
+    # before you screen all results, let the system sleep for 6 seconds minimum, in order to have a static search list.
+    time.sleep(15)
+
+def gather_soulseek_result_info(Y, kind):
+    feature_x_coord = {
+        'file': 900,
+        'size': 1600,
+        'attributes': 1750
+    }
+    x = feature_x_coord[kind]
+    pyauto.click((x, Y))
+    pyauto.hotkey('ctrl', 'c')
+    time.sleep(.1)
+    return tk.clipboard_get()
+
+def gather_soulseek_results(Y=254, row_height=13, nrows=56):
+    empty_row_count = 0
+    soulseek_results = []
+    for i in range(nrows):
+        soulseek_info = {result_info: gather_soulseek_result_info(Y, result_info) for result_info in
+                         ['file', 'size', 'attributes']}
+        empty_row = all(v == soulseek_info['file'] for v in soulseek_info.values())
+        if empty_row:
+            empty_row_count += 1
+            if empty_row_count == 3:
+                break
+
+        else:
+            soulseek_results.append(soulseek_info)
+            empty_row_count = 0
+        Y += row_height
+
+    return pd.DataFrame(soulseek_results)
+
+time.sleep(3)
+search_song(df.loc[0, 'track_artist_name'])
+df_soulseek = gather_soulseek_results()
+
+less_than_hour_mask = df_soulseek['attributes'].apply(lambda x: 'h' not in x)
+normal_size_mask = df_soulseek['size'].apply(lambda x: ',' in x)
+mp3_mask = df_soulseek['file'].str.endswith('.mp3')
+attributes_mask = df_soulseek['attributes'].str.len() > 0
+keep_mask = (less_than_hour_mask & normal_size_mask & mp3_mask & attributes_mask)
+df_soulseek = df_soulseek.loc[attributes_mask]
+df_soulseek[['bitrate', 'duration_sec']] = df_soulseek['attributes'].str.split(', ', n=1, expand=True)
+df_soulseek['bitrate'] = df_soulseek['bitrate'].str.replace('kbps', '').astype(int)
+df_soulseek['duration_sec'] = df_soulseek['duration_sec'].str.replace('s', '').str.split('m')
+df_soulseek['duration_sec'] = df_soulseek['duration_sec'].apply(lambda x: (int(x[0]) * 60) + int(x[1]))
+

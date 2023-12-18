@@ -51,14 +51,19 @@ def levenshtein_distance(s1, s2):
         distances = distances_
     return distances[-1]
 
+def jaccard_similarity(test, real):
+    intersection = set(test).intersection(set(real))
+    union = set(test).union(set(real))
+    return len(intersection) / len(union)
+
 class Progress:
 
     def __init__(self):
         self.start = time.time()
 
-    def show(self, loop_space, current_loop):
-        n = len(loop_space)
-        counter = loop_space.index(current_loop) + 1
+    def show(self, iteration, iterator):
+        n = len(iterator)
+        counter = iterator.index(iteration) + 1
         fraction_done = counter / n
 
         progress_percentage = str(round(fraction_done * 100, 2)) + "%"

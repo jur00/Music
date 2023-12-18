@@ -170,6 +170,6 @@ class UpdateArtists:
                     nearest, result_artist_names, result_artist_ids)
 
                 self.my_artists[i].update(artist_features)
-                progress.show(range(len(self.my_artists)), i)
+                progress.show(i, range(len(self.my_artists)))
 
         dump(self.my_artists, self.my_artists_path)

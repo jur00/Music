@@ -104,7 +104,7 @@ class UpdateDataset:
             print("Dumping data, don't interrupt", end='\r')
             dump(data_mm, self.my_music_path)
 
-            progress.show(self.filenames_added, fn)
+            progress.show(fn, self.filenames_added)
 
     def _get_wave_features(self, data_mm):
         wf = WaveFeatures(tracks_dir=self.tracks_dir, rb_data=self.data_rm)
@@ -130,7 +130,7 @@ class UpdateDataset:
             print("Dumping data, don't interrupt", end='\r')
             dump(data_mm, self.my_music_path)
 
-            progress.show(self.filenames_wave, fn)
+            progress.show(fn, self.filenames_wave)
 
     def run(self, quick_test=False):
         self.__quick_test = quick_test
