@@ -5,6 +5,7 @@ import httplib2
 import time
 from functools import wraps
 from datetime import datetime
+from difflib import SequenceMatcher
 
 import spotipy
 
@@ -35,6 +36,15 @@ def retry(**fkwargs):
             return fkwargs['empty_output'], conn_error
         return wrapper
     return _decorator
+
+def string_similarity(a, b):
+    """
+    Retourne le ratio de ressemble entre deux strings
+    :param a:
+    :param b:
+    :return:
+    """
+    return SequenceMatcher(None, a, b).ratio()
 
 def levenshtein_distance(s1, s2):
     if len(s1) > len(s2):
