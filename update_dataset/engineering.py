@@ -17,6 +17,7 @@ from entropy_estimators import continuous
 from scipy.stats.mstats import gmean
 from scipy.stats import kurtosis, skew, beta
 
+from config import Config
 from base.spotify_youtube import (get_spotify_audio_features, search_spotify_tracks, get_youtube_link,
                                   find_youtube_elements, get_youtube_video_properties)
 from base.connect import (SpotifyConnect, YoutubeConnect)
@@ -913,3 +914,13 @@ class ConnectionErrors:
                         d.update(yt_error_features)
 
         return self.data_mm
+
+class DfMyMusicWithoutWaveFeatures:
+
+    def __init__(self, data_mm):
+        self.df = pd.DataFrame(data_mm)
+        self.wave_features = load(Config.wave_features_path)
+
+    def create(self):
+        df_no_wave_features = self.df[[col for col in self.df.columns if col not in self.wave_features]]
+        dump(df_no_wave_features, Config.df_my_music_no_wave_features_path)

@@ -6,6 +6,12 @@ import time
 from functools import wraps
 from datetime import datetime
 from difflib import SequenceMatcher
+import webbrowser
+from scipy.stats import gaussian_kde
+import numpy as np
+
+import plotly
+from plotly.io._base_renderers import BaseHTTPRequestHandler, HTTPServer
 
 import spotipy
 
@@ -100,3 +106,72 @@ class Progress:
         print(f'Done: {counter} / {n} ({progress_percentage}), ETA: {time_completed} ({time_to_go}), '
               f'Average time per loop: {avg_minutes} minutes and {avg_seconds} seconds',
               end='\r')
+
+
+def open_html_in_browser(html, using=None, new=0, autoraise=True):
+    """
+    Display html in a web browser without creating a temp file.
+    Instantiates a trivial http server and uses the webbrowser module to
+    open a URL to retrieve html from that server.
+    Parameters
+    ----------
+    html: str
+        HTML string to display
+    using, new, autoraise:
+        See docstrings in webbrowser.get and webbrowser.open
+    """
+    if isinstance(html, str):
+        html = html.encode("utf8")
+
+    browser = None
+
+    if using is None:
+        browser = webbrowser.get(None)
+    else:
+        if not isinstance(using, tuple):
+            using = (using,)
+        for browser_key in using:
+            try:
+                browser = webbrowser.get(browser_key)
+                if browser is not None:
+                    break
+            except webbrowser.Error:
+                pass
+
+        if browser is None:
+            raise ValueError("Can't locate a browser with key in " + str(using))
+
+    class OneShotRequestHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+
+            bufferSize = 1024 * 1024
+            for i in range(0, len(html), bufferSize):
+                self.wfile.write(html[i : i + bufferSize])
+
+        def log_message(self, format, *args):
+            # Silence stderr logging
+            pass
+
+    server = HTTPServer(("127.0.0.1", 55002), OneShotRequestHandler)  # fixed port number
+    browser.open(
+        "http://127.0.0.1:%s" % server.server_port, new=new, autoraise=autoraise
+    )
+
+    server.handle_request()
+
+def adaptive_linspace(data, num_points):
+    kde = gaussian_kde(data)
+    x_min, x_max = data.min(), data.max()
+    x_range = np.linspace(x_min, x_max, 1000)
+    density = kde(x_range)
+    cdf = np.cumsum(density)
+    cdf = cdf / cdf[-1]
+
+    num_points_wider = (num_points * 2) + 1
+    uniform_cdf_points = np.linspace(0, 1, num_points_wider)[1::2]
+    adaptive_points = np.interp(uniform_cdf_points, cdf, x_range)
+
+    return adaptive_points

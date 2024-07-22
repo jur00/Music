@@ -9,8 +9,10 @@ import re
 
 from base.helpers import levenshtein_distance
 from base.connect import SpotifyConnect
-from base.spotify_youtube import (get_spotify_recommendations, get_spotify_track, get_spotify_artist_top_tracks,
-                                  get_spotify_audio_features)
+from base.spotify_youtube import (
+    get_spotify_recommendations, get_spotify_track, get_spotify_artist_top_tracks,
+    get_spotify_audio_features
+)
 
 
 class SelectTrainingTracklist:
@@ -63,7 +65,7 @@ class SelectTrainingTracklist:
         self.n_tracks_to_go = self.df_tracklist.shape[0]
         print(f'{self.__class__.__name__}: {self.n_tracks_to_go} tracks to go')
         if self.n_tracks_to_go == 0:
-            print(f'For all tracks {self.__class__.__name__} are done.')
+            pass
         elif self.n_tracks_to_go >= self.n_tracks:
             self.df_tracklist = self.df_tracklist.iloc[:self.n_tracks]
         else:
@@ -324,9 +326,10 @@ class AssembleCleanTracklist:
     def write(self):
         df_total = (pd
                     .concat([self.df_base, self.df])
+                    .assign(track_artist_name=lambda xdf: xdf['track_artist_name'].apply(lambda x: re.sub(' +', '', x)))
                     .drop_duplicates(subset='track_id')
                     .reset_index(drop=True))
-        df_total['track_artist_name'] = df_total['track_artist_name'].str.replace('  ', ' ')
+
         dump(df_total, Config.training_tracklist_path)
 
     def run(self):
@@ -339,180 +342,18 @@ class AssembleCleanTracklist:
         self.remove_existing_tracks()
 
         print(f'{self.df.shape[0]} tracks to go')
-        self.df = self.df.sample(n=5)
+        # self.df = self.df.sample(n=5)
 
         self.collect_audio_features()
 
         self.write()
 
 
-rc = Recommendations()
-rc.run()
-
-at = ArtistTracks()
-at.run()
+# rc = Recommendations()
+# rc.run()
+#
+# at = ArtistTracks()
+# at.run()
 
 act = AssembleCleanTracklist()
 act.run()
-
-from joblib import load, dump
-import pandas as pd
-from config import Config
-from tkinter import Tk
-import pyperclip
-import pyautogui as pyauto
-import time
-from unidecode import unidecode
-import re
-from base.helpers import string_similarity
-
-tk = Tk()
-
-df = load(Config.training_tracklist_path)
-
-def create_compare_names(df, i):
-    artist_track_name = df.loc[i, 'track_artist_name']
-    track_name = unidecode(
-        re.sub(r'[^a-zA-Z 0-9À-ú]+', '', str(df.loc[i, 'track_name']))
-    ).lower()
-    duration_ms = df.loc[i, 'track_duration_ms']
-    return artist_track_name, track_name, duration_ms
-
-def search_soulseek(track):
-    # for downloading via soulseek, open soulseek in full-screen and navigate to the 'Manual Search' section. the
-    # location parameters of the mouse-clicks depend on the screen resulution. I use a standard (1920x1080) resolution.
-    time.sleep(5)
-    pyperclip.copy(track)
-    pyauto.click((53, 150))
-    pyauto.hotkey("ctrl", "v")
-    pyauto.press('enter')
-
-    # before you screen all results, let the system sleep for 6 seconds minimum, in order to have a static search list.
-    time.sleep(10)  # 15
-
-def gather_soulseek_result_info(Y, kind):
-    feature_x_coord = {
-        'file': 900,
-        'size': 1600,
-        'attributes': 1750
-    }
-    x = feature_x_coord[kind]
-    pyauto.click((x, Y))
-    pyauto.hotkey('ctrl', 'c')
-    time.sleep(.1)
-    return tk.clipboard_get()
-
-def create_soulseek_df(Y=254, row_height=13, nrows=56):
-
-    empty_row_count = 0
-    soulseek_results = []
-    for i in range(nrows):
-        soulseek_info = {result_info: gather_soulseek_result_info(Y, result_info) for result_info in
-                         ['file', 'size', 'attributes']}
-        empty_row = all(v == soulseek_info['file'] for v in soulseek_info.values())
-        if empty_row:
-            empty_row_count += 1
-            if empty_row_count == 3:
-                break
-        else:
-            soulseek_info.update({'Y': Y})
-            soulseek_results.append(soulseek_info)
-            empty_row_count = 0
-        Y += row_height
-
-    return pd.DataFrame(soulseek_results)
-
-def filter_soulseek_df(xdf):
-    less_than_hour_mask = xdf['attributes'].apply(lambda x: 'h' not in x)
-    normal_size_mask = xdf['size'].apply(lambda x: ',' in x)
-    mp3_mask = xdf['file'].str.endswith('.mp3')
-    attributes_mask = xdf['attributes'].apply(lambda x: ',' in x)
-    keep_mask = (less_than_hour_mask & normal_size_mask & mp3_mask & attributes_mask)
-
-    return xdf.loc[keep_mask].reset_index(drop=True)
-
-def clean_soulseek_df(xdf):
-    xdf = (
-        xdf
-        .assign(
-            **xdf['attributes'].str.split(', ', n=1, expand=True).rename(columns={0: 'bitrate', 1: 'duration_ms'})
-        )
-        .assign(
-            bitrate=lambda xxdf: xxdf['bitrate'].str.replace('kbps', '').astype(int),
-            duration_ms=lambda xxdf: xxdf['duration_ms'].str.replace('s', '').str.split('m')
-        )
-        .assign(
-            duration_ms=lambda xxdf: xxdf['duration_ms'].apply(lambda x: 1000 * ((int(x[0]) * 60) + int(x[1]))),
-            file_clean=lambda xxdf: xxdf['file']
-                .str.rsplit('.', 1)
-                .str[0]
-                .str.replace('_', ' ')
-                .str.replace('-', ' ')
-                .str.replace('  ', ' ')
-                .apply(lambda x: unidecode(re.sub(r'[^a-zA-Z 0-9À-ú]+', '', str(x))))
-                .str.lower()
-        )
-        .drop(columns='attributes')
-    )
-    return xdf
-
-def compare_names(xdf, artist_track_name, track_name):
-    artist_track_name_original = artist_track_name + ' original mix'
-    track_name_original = track_name + ' original mix'
-    comparisons = [artist_track_name, artist_track_name_original, track_name, track_name_original]
-    similarity_columns = []
-    for i, comparison in enumerate(comparisons):
-        similarity_column = f'name_similarity_{i}'
-        xdf = xdf.assign(**{similarity_column: xdf['file_clean'].apply(
-            lambda x: string_similarity(x, comparison))
-        })
-        similarity_columns.append(similarity_column)
-
-    xdf = (
-        xdf
-        .assign(name_similarity=xdf[similarity_columns].max(axis=1))
-        .drop(columns=similarity_columns)
-    )
-    return xdf
-
-def compare_durations(xdf, duration_ms):
-    longer = xdf['duration_ms'] >= duration_ms
-    shorter = xdf['duration_ms'] < duration_ms
-    duration_similarity = pd.concat([
-        xdf.loc[shorter, 'duration_ms'] / duration_ms,
-        duration_ms / xdf.loc[longer, 'duration_ms']
-    ]).sort_index()
-    xdf = xdf.assign(duration_similarity=duration_similarity)
-    return xdf
-
-def keep_only_high_similarity_scores(xdf, score):
-    score_mask = xdf['similarity_score'] > score
-    return xdf.loc[score_mask].reset_index(drop=True)
-
-t0 = time.time()
-i = 3
-artist_track_name, track_name, duration_ms = create_compare_names(df, i)
-
-search_soulseek(artist_track_name)
-
-df_qt = create_soulseek_df()
-
-df_soulseek = (
-    df_qt
-    .pipe(filter_soulseek_df)
-)
-
-if df_soulseek.shape[0] > 0:
-    df_soulseek = (
-        df_soulseek
-        .pipe(clean_soulseek_df)
-        .pipe(compare_names, artist_track_name, track_name)
-        .pipe(compare_durations, duration_ms)
-        .assign(similarity_score=lambda xdf: (xdf['name_similarity'] + xdf['duration_similarity'] * 2) / 3)
-        .pipe(keep_only_high_similarity_scores, .9)
-    )
-if df_soulseek.shape[0] > 0:
-    df_soulseek.loc[0]
-
-t1 = time.time()
-tdif = (t1-t0)

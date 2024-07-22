@@ -5,12 +5,13 @@ from pathlib import Path
 
 from joblib import load, dump
 
-
 from base.helpers import Progress
 from update_dataset.helpers import find
-from update_dataset.engineering import (RekordboxMusic, ExplorerInterruption,
-                                        Disjoint, SpotifyFeatures, YoutubeFeatures, WaveFeatures,
-                                        FeaturesImprovement, Popularity, Versioning, ConnectionErrors)
+from update_dataset.engineering import (
+    RekordboxMusic, ExplorerInterruption, Disjoint, SpotifyFeatures, YoutubeFeatures,
+    WaveFeatures, FeaturesImprovement, Popularity, Versioning, ConnectionErrors,
+    DfMyMusicWithoutWaveFeatures
+)
 
 
 class UpdateDataset:
@@ -19,7 +20,7 @@ class UpdateDataset:
 
         os.chdir(Config.working_dir)
 
-        self.tracks_dir = Config.tracks_dir
+        self.tracks_dir = Config.my_tracks_dir
         self.my_music_path = Path(Config.data_dir, Config.my_music_fn)
         self.rekordbox_music_path = Path(Config.data_dir, Config.rekordbox_music_fn)
         rb_fn, rb_ext = os.path.splitext(Config.rekordbox_music_fn)
@@ -132,6 +133,11 @@ class UpdateDataset:
 
             progress.show(fn, self.filenames_wave)
 
+    @staticmethod
+    def _create_df_without_wave_features(data_mm):
+        mm_no_wf = DfMyMusicWithoutWaveFeatures(data_mm)
+        mm_no_wf.create()
+
     def run(self, quick_test=False):
         self.__quick_test = quick_test
 
@@ -158,3 +164,5 @@ class UpdateDataset:
             self._calculate_popularity(data_mm)
 
             self._get_wave_features(data_mm)
+
+            self._create_df_without_wave_features()
