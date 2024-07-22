@@ -9,6 +9,8 @@ from lightgbm import LGBMClassifier
 import plotly.io as pio
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+from sklearn.model_selection import cross_validate, GridSearchCV
+from sklearn.metrics import fbeta_score, recall_score, precision_score, balanced_accuracy_score, make_scorer
 
 from joblib import load, dump
 from itertools import product
@@ -16,6 +18,7 @@ import time
 from datetime import datetime
 import re
 import os
+from typing import List
 
 pio._base_renderers.open_html_in_browser = open_html_in_browser
 pio.renderers.default = "browser"
@@ -28,6 +31,113 @@ def get_last_model(playlist):
     else:
         return []
 
+
+class SearchSpace:
+
+    def __init__(self, playlist, models_dir):
+        self.playlist = playlist
+        self.models_dir = models_dir
+        self.first_model = f'{playlist}_grid_searches' not in os.listdir(self.models_dir)
+
+        self.hyperparameter_inits = self._set_hyperparameter_inits()
+        self.search_space_options = self._set_search_space_options()
+        self.hyperparameters = list(self.hyperparameter_inits.keys())
+
+        self.grid_search_n = None
+        self.df_hyperparameter_values = None
+        self.search_space = None
+        self.init_values = None
+
+    @staticmethod
+    def _set_hyperparameter_inits():
+        return dict(
+            n_estimators=100,
+            max_depth=3,
+            num_leaves=5,
+            min_child_samples=5,
+            reg_alpha=.1,
+            reg_lambda=1
+        )
+
+    @staticmethod
+    def _regularization_logspace(n=12, base=10):
+        return np.round((np.logspace(0, 1, n, base=base) - 1) / (base - 1), 4)
+
+    def _set_search_space_options(self):
+        return dict(
+            n_estimators=np.arange(50, 1001, 25),
+            max_depth=np.arange(3, 32, 1),
+            num_leaves=np.arange(3, 32, 1),
+            min_child_samples=np.arange(3, 32, 1),
+            reg_alpha=self._regularization_logspace(),
+            reg_lambda=self._regularization_logspace()
+        )
+
+    def _get_previous_grid_searches(self):
+        if self.first_model:
+            return [], 0
+        else:
+            grid_search_dir = self.models_dir + f'{playlist}\\'
+            previous_grid_searches = list(sorted(os.listdir(grid_search_dir)))
+            previous_grid_search = previous_grid_searches[-1]
+            previous_grid_search_n = int(previous_grid_search.split('.')[0])
+            return [load(f'{grid_search_dir}{pgs}') for pgs in previous_grid_searches], previous_grid_search_n + 1
+
+    def _get_hyperparameter_values_df(self, previous_grid_searches):
+        return pd.DataFrame(
+            [self.hyperparameter_inits] + [gs.best_params_ for gs in previous_grid_searches]
+        )
+
+    def _get_previous_hyperparameter(self):
+        if self.first_model:
+            return 'reg_lambda'
+        else:
+            previous_hyperparameter_values = self.df_hyperparameter_values.iloc[-1]
+            return previous_hyperparameter_values.loc[~previous_hyperparameter_values.isna()].index[0]
+
+    def _get_current_hyperparameter(self, previous_hyperparameter):
+        if previous_hyperparameter == 'reg_lambda':
+            return 'n_estimators'
+        else:
+            return self.hyperparameters[self.hyperparameters.index(previous_hyperparameter) + 1]
+
+    def _get_previous_hyperparameter_values(self):
+        previous_hyperparameter_values = dict()
+        for hyperparameter in self.hyperparameters:
+            hyperparameter_values = self.df_hyperparameter_values[hyperparameter]
+            previous_value = hyperparameter_values.loc[~hyperparameter_values.isna()].to_list()[-1]
+            previous_hyperparameter_values[hyperparameter] = previous_value
+        return previous_hyperparameter_values
+
+    @staticmethod
+    def _find_nearest_values(arr, val):
+        idx_nearest = np.argmin(np.abs(arr - val))
+        idx_min = max([0, idx_nearest - 1])
+        idx_max = min([len(arr), idx_nearest + 1])
+
+        return arr[idx_min:idx_max + 1]
+
+    def _prepare_search_space(self, previous_hyperparameter_values, current_hyperparameter):
+        previous_value = previous_hyperparameter_values[current_hyperparameter]
+        search_space_options = self.search_space_options[current_hyperparameter]
+        return {current_hyperparameter: self._find_nearest_values(search_space_options, previous_value)}
+
+    @staticmethod
+    def _prepare_init_values(previous_hyperparameter_values, current_hyperparameter):
+        return {k: v for k, v in previous_hyperparameter_values.items() if k != current_hyperparameter}
+
+    def run(self):
+        previous_grid_searches, self.grid_search_n = self._get_previous_grid_searches()
+        self.df_hyperparameter_values = self._get_hyperparameter_values_df(previous_grid_searches)
+
+        previous_hyperparameter = self._get_previous_hyperparameter()
+        current_hyperparameter = self._get_current_hyperparameter(previous_hyperparameter)
+        previous_hyperparameter_values = self._get_previous_hyperparameter_values()
+
+        self.search_space = self._prepare_search_space(previous_hyperparameter_values, current_hyperparameter)
+        self.init_values = self._prepare_init_values(previous_hyperparameter_values, current_hyperparameter)
+
+
 class ModelTrain:
 
     def __init__(self, df, features, playlist):
@@ -35,11 +145,19 @@ class ModelTrain:
         self.features = features
         self.playlist = playlist
 
-        self.save_filename = Config.playlists_dir + f'app\\models\\{playlist}.sav'
+        # file settings
+        self.models_dir = Config.playlists_dir + 'app\\models\\'
+        self.model_filename = self.models_dir + f'{playlist}.sav'
+
+        self.ssp = SearchSpace(playlist, self.models_dir)
+        self.ssp.run()
 
         self.X = None
         self.y = None
+        self.grid_searches = None
+        self.gs_n_features = None
         self.model = None
+        self.scores = None
 
     @staticmethod
     def _datetime_ext():
@@ -50,15 +168,47 @@ class ModelTrain:
         self.X = self.df.loc[train_mask, self.features]
         self.y = self.df.loc[train_mask, self.playlist]
 
+    def _grid_search(self, X):
+        model = LGBMClassifier(**self.ssp.init_values)
+        param_grid = self.ssp.search_space
+        scoring = make_scorer(fbeta_score, beta=.5)
+        grid_search = GridSearchCV(
+            estimator=model, param_grid=param_grid, cv=5, scoring=scoring, return_train_score=True
+        )
+        grid_search.fit(X, self.y.replace({'in': 1, 'out': 0}))
+        return grid_search
+
+    def _grid_search_n_features(self):
+        self.grid_searches = dict()
+        self.gs_n_features = dict()
+        for n_features in [2, 3, 4]:
+            X = self.X.iloc[:, :n_features]
+            grid_search = self._grid_search(X)
+            self.grid_searches[n_features] = grid_search
+            grid_search_results = {'score': grid_search.best_score_, 'params': grid_search.best_params_}
+            self.gs_n_features[n_features] = {k: v for k, v in grid_search_results.items()}
+
+    def _get_best_n_features(self):
+        r = {k: v['score'] - ((k-2) * .01) for k, v in self.gs_n_features.items()}
+        best_n_features = max(r, key=r.get)
+        return r, best_n_features
+
     def _fit_model(self):
+        scoring = {
+            'balanced_accuracy': make_scorer(balanced_accuracy_score),
+            'fbeta': make_scorer(fbeta_score, beta=.5),
+            'precision': make_scorer(precision_score),
+            'recall': make_scorer(recall_score)
+        }
         self.model = LGBMClassifier()
         self.model.fit(self.X, self.y)
 
     def _save_model(self):
-        dump(self.model, self.save_filename)
+        dump(self.model, self.model_filename)
 
     def run(self):
         self._prepare_data()
+        self._grid_search()
         self._fit_model()
         self._save_model()
 
@@ -599,7 +749,9 @@ class ClassBalancePlot:
         self.fig.add_bar(
             x=self.s_class_balance.index,
             y=self.s_class_balance,
-            marker_color='navy'
+            marker_color='navy',
+            text=self.s_class_balance,
+            textposition='auto'
         )
 
     def _adjust_layout(self):
@@ -663,6 +815,7 @@ class DfUpdate:
         self.clickData = clickData
 
         self.file_name = None
+        self.track_name = None
         self.data_table = None
         self.add_disable = None
         self.exclude_disable = None
@@ -670,6 +823,11 @@ class DfUpdate:
     def _get_file_name(self):
         self.file_name = self.clickData['points'][0]['customdata'][7]
         
+    def _get_track_name(self):
+        artist = self.clickData['points'][0]['customdata'][1]
+        track = self.clickData['points'][0]['customdata'][0]
+        self.track_name = f'{artist} - {track}'
+
     def _add_remove_reset(self):
         if self.button_id == 'add-track':
             self.df.loc[self.df['File Name'] == self.file_name, self.playlist] = 'in'
@@ -705,6 +863,7 @@ class DfUpdate:
     def run(self):
         if self.clickData:
             self._get_file_name()
+            self._get_track_name()
             self._add_remove_reset()
             self._save_df()
 
@@ -712,33 +871,20 @@ class DfUpdate:
         self.toggle_disabled_buttons()
             
 
-left_x = 'energy'
-left_y = 'danceability'
-right_x = 'valence'
-right_y = 'tempo'
+
 playlist = 'Hardlopen'
-heatmap_kind = 'float'
-heatmap_resolution = 'high'
+features = ['energy', 'tempo', 'danceability', 'valence']
 
-customdata_cols = ['name', 'artists', 'energy', 'danceability', 'valence', 'tempo', 'popularity', 'File Name']
-features = ['energy', 'danceability', 'valence', 'tempo']
-train_model_threshold = 44
+df = load(Config.df_app)
+model = get_last_model(playlist)
+
+tm = TrainedModel(df, model, playlist, features)
 
 
-#
-# isp = InteractiveScatterPlot(
-#     df,
-#     left_x,
-#     left_y,
-#     right_x,
-#     right_y,
-#     playlist,
-#     heatmap_kind,
-#     heatmap_resolution,
-#     features,
-#     customdata_cols,
-#     train_model_threshold
-# )
-#
-# isp.run(show=True)
+mt = ModelTrain(df, features, playlist)
+mt._prepare_data()
+mt._grid_search_n_features()
+r, n_best_features = mt._get_best_n_features()
+
+
 

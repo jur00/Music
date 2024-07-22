@@ -183,15 +183,23 @@ app.layout = dbc.Container([
             dbc.Card([
                 dbc.CardHeader(html.Div(id='audio-output')),
                 dbc.CardBody([
-                    html.Button('Stop', id='audio-stop', n_clicks=0),
-                    html.Button(f'Skip {n_seconds_skip} seconds', id='audio-skip', n_clicks=0),
-                    html.Button('Add to playlist', id='add-track', n_clicks=0, disabled=True),
-                    html.Button('Exclude from playlist', id='exclude-track', n_clicks=0, disabled=True),
-                    html.Button('Reset playlist', id='reset-playlist', n_clicks=0),
+                    dbc.Button('Play', id='audio-play', n_clicks=0, color='success', outline=True, className='m-1'),
+                    dbc.Button('Stop', id='audio-stop', n_clicks=0, color='danger', outline=True, className='m-1'),
+                    dbc.Button(f'Skip {n_seconds_skip} seconds', id='audio-skip', n_clicks=0, color='secondary', outline=True, className='m-1')
+                ])
+            ], className='mb-4')
+        ], width=2),
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader(html.Div(id='trackname')),
+                dbc.CardBody([
+                    dbc.Button('Add to playlist', id='add-track', n_clicks=0, disabled=True, color='success', outline=True, className='m-1'),
+                    dbc.Button('Exclude from playlist', id='exclude-track', n_clicks=0, disabled=True, color='danger', outline=True, className='m-1'),
+                    dbc.Button('Reset playlist', id='reset-playlist', n_clicks=0, color='secondary', outline=True, className='m-1'),
                     dcc.Store('stored-data', data=df.to_dict('records'))
                 ])
             ], className='mb-4')
-        ], width=6),
+        ], width=3),
         dbc.Col([
             dbc.Card([
                 dbc.CardHeader('data'),
@@ -272,37 +280,10 @@ def update_scatter_plot(
 
     return isp.fig, fip.fig, cbp.fig
 
-# Play audio when a marker is clicked
-@app.callback(
-    Output('audio-output', 'children'),
-    Input('scatter-plot', 'clickData'),
-    Input('audio-skip', 'n_clicks'),
-    Input('audio-stop', 'n_clicks')
-)
-def audio_player(clickData, btn_skip, btn_stop):
-    global audio
-    global track_name
-
-    button_id = ctx.triggered_id if not None else 'No clicks yet'
-
-    if button_id == 'scatter-plot':
-        track_name = clickData['points'][0]['customdata'][0]
-        file_name = clickData['points'][0]['customdata'][7]
-        audio = Audio()
-        audio.play(file_name)
-        return f"Playing audio: {track_name}"
-    elif button_id == 'audio-skip':
-        audio.skip()
-        return f"Playing audio: {track_name}"
-    elif button_id == 'audio-stop':
-        audio.stop()
-        return 'Click a marker to play audio.'
-    else:
-        return "Click a marker to play audio."
-
 @app.callback(
     Output('df-playlist', 'data'),
     Output('stored-data', 'data'),
+    Output('trackname', 'children'),
     Output('add-track', 'disabled'),
     Output('exclude-track', 'disabled'),
     Input('playlist-dropdown', 'value'),
@@ -321,7 +302,69 @@ def add_remove_tracks(playlist, add, remove, reset, clickData, current_data):
     udf = DfUpdate(df, playlist, button_id, clickData)
     udf.run()
 
-    return udf.data_table, udf.df.to_dict('records'), udf.add_disable, udf.exclude_disable
+    return udf.data_table, udf.df.to_dict('records'), udf.track_name, udf.add_disable, udf.exclude_disable
+
+# Play audio when a marker is clicked
+@app.callback(
+    Output('audio-output', 'children'),
+    Output('audio-play', 'disabled'),
+    Output('audio-stop', 'disabled'),
+    Output('audio-skip', 'disabled'),
+    Input('scatter-plot', 'clickData'),
+    Input('audio-play', 'n_clicks'),
+    Input('audio-stop', 'n_clicks'),
+    Input('audio-skip', 'n_clicks'),
+)
+def audio_player(clickData, btn_play, btn_stop, btn_skip):
+    global audio
+    global track_name
+
+    button_id = ctx.triggered_id if not None else 'No clicks yet'
+
+    if clickData:
+        track_name = clickData['points'][0]['customdata'][0]
+        file_name = clickData['points'][0]['customdata'][7]
+
+        if button_id == 'audio-play':
+            audio = Audio()
+            audio.play(file_name)
+
+            header = f"Playing audio: {track_name}"
+            play_disabled = True
+            stop_disabled = False
+            skip_disabled = False
+        elif button_id == 'audio-skip':
+            audio.skip()
+
+            header = f"Playing audio: {track_name}"
+            play_disabled = True
+            stop_disabled = False
+            skip_disabled = False
+        elif button_id == 'audio-stop':
+            audio.stop()
+
+            header = f'Not playing: {track_name}'
+            play_disabled = False
+            stop_disabled = True
+            skip_disabled = True
+        elif button_id == 'scatter-plot':
+            header = f'Not playing: {track_name}'
+            play_disabled = False
+            stop_disabled = False
+            skip_disabled = False
+        else:
+            header = f'Not playing: {track_name}'
+            play_disabled = False
+            stop_disabled = False
+            skip_disabled = False
+    else:
+        header = 'Select a marker and click play.'
+        play_disabled = True
+        stop_disabled = True
+        skip_disabled = True
+
+    return header, play_disabled, stop_disabled, skip_disabled
+
 
 # Run the app
 if __name__ == '__main__':
