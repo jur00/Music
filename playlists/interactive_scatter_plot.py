@@ -34,10 +34,10 @@ def get_last_model(playlist):
 
 class SearchSpace:
 
-    def __init__(self, playlist, models_dir):
+    def __init__(self, playlist, results_map, first_model):
         self.playlist = playlist
-        self.models_dir = models_dir
-        self.first_model = f'{playlist}_grid_searches' not in os.listdir(self.models_dir)
+        self.results_map = results_map
+        self.first_model = first_model
 
         self.hyperparameter_inits = self._set_hyperparameter_inits()
         self.search_space_options = self._set_search_space_options()
@@ -73,15 +73,17 @@ class SearchSpace:
             reg_lambda=self._regularization_logspace()
         )
 
-    def _get_previous_grid_searches(self):
+    def _get_previous_results(self):
         if self.first_model:
             return [], 0
         else:
-            grid_search_dir = self.models_dir + f'{playlist}\\'
-            previous_grid_searches = list(sorted(os.listdir(grid_search_dir)))
+            previous_grid_searches = list(sorted(os.listdir(self.results_map)))
             previous_grid_search = previous_grid_searches[-1]
             previous_grid_search_n = int(previous_grid_search.split('.')[0])
-            return [load(f'{grid_search_dir}{pgs}') for pgs in previous_grid_searches], previous_grid_search_n + 1
+            return (
+                [load(f'{self.results_map}{pgs}')['best_param'] for pgs in previous_grid_searches],
+                previous_grid_search_n + 1
+            )
 
     def _get_hyperparameter_values_df(self, previous_grid_searches):
         return pd.DataFrame(
@@ -96,8 +98,8 @@ class SearchSpace:
             return previous_hyperparameter_values.loc[~previous_hyperparameter_values.isna()].index[0]
 
     def _get_current_hyperparameter(self, previous_hyperparameter):
-        if previous_hyperparameter == 'reg_lambda':
-            return 'n_estimators'
+        if previous_hyperparameter == self.hyperparameters[-1]:
+            return self.hyperparameters[0]
         else:
             return self.hyperparameters[self.hyperparameters.index(previous_hyperparameter) + 1]
 
@@ -127,7 +129,7 @@ class SearchSpace:
         return {k: v for k, v in previous_hyperparameter_values.items() if k != current_hyperparameter}
 
     def run(self):
-        previous_grid_searches, self.grid_search_n = self._get_previous_grid_searches()
+        previous_grid_searches, self.grid_search_n = self._get_previous_results()
         self.df_hyperparameter_values = self._get_hyperparameter_values_df(previous_grid_searches)
 
         previous_hyperparameter = self._get_previous_hyperparameter()
@@ -146,18 +148,28 @@ class ModelTrain:
         self.playlist = playlist
 
         # file settings
-        self.models_dir = Config.playlists_dir + 'app\\models\\'
-        self.model_filename = self.models_dir + f'{playlist}.sav'
+        self.model_path = Config.playlists_models_dir + f'{playlist}.sav'
+        self.results_map = Config.playlists_models_dir + f'{playlist}_results\\'
+        self.first_model = os.path.exists(self.results_map)
 
-        self.ssp = SearchSpace(playlist, self.models_dir)
+        self.ssp = SearchSpace(playlist, self.results_map, self.first_model)
         self.ssp.run()
+
+        self.results_path = f'{self.results_map}{self.ssp.grid_search_n}.sav'
 
         self.X = None
         self.y = None
+        self.y_bool = None
         self.grid_searches = None
         self.gs_n_features = None
+        self.best_n_features = None
+        self.X_optim = None
+        self.best_param = None
+        self.init_values = None
+        self.scoring = None
         self.model = None
         self.scores = None
+        self.results = None
 
     @staticmethod
     def _datetime_ext():
@@ -167,6 +179,7 @@ class ModelTrain:
         train_mask = ~self.df[self.playlist].isna()
         self.X = self.df.loc[train_mask, self.features]
         self.y = self.df.loc[train_mask, self.playlist]
+        self.y_bool = self.y.replace({'in': 1, 'out': 0})
 
     def _grid_search(self, X):
         model = LGBMClassifier(**self.ssp.init_values)
@@ -175,7 +188,7 @@ class ModelTrain:
         grid_search = GridSearchCV(
             estimator=model, param_grid=param_grid, cv=5, scoring=scoring, return_train_score=True
         )
-        grid_search.fit(X, self.y.replace({'in': 1, 'out': 0}))
+        grid_search.fit(X, self.y_bool)
         return grid_search
 
     def _grid_search_n_features(self):
@@ -190,27 +203,64 @@ class ModelTrain:
 
     def _get_best_n_features(self):
         r = {k: v['score'] - ((k-2) * .01) for k, v in self.gs_n_features.items()}
-        best_n_features = max(r, key=r.get)
-        return r, best_n_features
+        self.best_n_features = max(r, key=r.get)
 
-    def _fit_model(self):
-        scoring = {
+    def _prepare_x_optim_and_init_values(self):
+        self.X_optim = self.X.iloc[:, :self.best_n_features]
+        self.init_values = self.ssp.init_values
+        self.best_param = self.gs_n_features[self.best_n_features]['params']
+        self.init_values.update(self.best_param)
+
+    def _prepare_scoring(self):
+        self.scoring = {
             'balanced_accuracy': make_scorer(balanced_accuracy_score),
             'fbeta': make_scorer(fbeta_score, beta=.5),
             'precision': make_scorer(precision_score),
             'recall': make_scorer(recall_score)
         }
-        self.model = LGBMClassifier()
-        self.model.fit(self.X, self.y)
 
-    def _save_model(self):
-        dump(self.model, self.model_filename)
+    def _fit_model(self):
+        self.scores = cross_validate(
+            LGBMClassifier(**self.init_values),
+            self.X_optim,
+            self.y_bool,
+            cv=5,
+            scoring=self.scoring,
+            return_train_score=True
+        )
+        self.model = LGBMClassifier(**self.init_values)
+        self.model.fit(self.X_optim, self.y)
+
+    def _prepare_results(self):
+        feature_importance = {f: i for f, i in zip(self.model.feature_name_, self.model.feature_importances_)}
+        other_features = list(set(self.features) - set(self.model.feature_name_))
+        feature_importance.update({of: 0 for of in other_features})
+
+        scores = {k: np.mean(v) for k, v in self.scores.items() if k.startswith('test_')}
+
+        self.results = {
+            'feature_importance': feature_importance,
+            'scores': scores,
+            'best_param': mt.best_param
+        }
+
+    def _save(self):
+        dump(self.model, self.model_path)
+
+        if self.first_model:
+            os.makedirs(self.results_map)
+
+        dump(self.results, self.results_path)
 
     def run(self):
         self._prepare_data()
-        self._grid_search()
+        self._grid_search_n_features()
+        self._get_best_n_features()
+        self._prepare_x_optim_and_init_values()
+        self._prepare_scoring()
         self._fit_model()
-        self._save_model()
+        self._prepare_results()
+        self._save()
 
 class TrainedModel:
 
@@ -880,11 +930,5 @@ model = get_last_model(playlist)
 
 tm = TrainedModel(df, model, playlist, features)
 
-
 mt = ModelTrain(df, features, playlist)
-mt._prepare_data()
-mt._grid_search_n_features()
-r, n_best_features = mt._get_best_n_features()
-
-
-
+mt.run()

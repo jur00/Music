@@ -28,5 +28,6 @@ class Config:
     credential_path = Path(credential_dir, credential_fn)
 
     playlists_dir = f'{working_dir}files\\playlists\\'
+    playlists_models_dir = playlists_dir + 'app\\models\\'
     df_app = f'{playlists_dir}app\\df.sav'
 
